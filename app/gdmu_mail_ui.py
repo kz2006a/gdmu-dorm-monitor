@@ -10,6 +10,7 @@ from tkinter import ttk, messagebox
 import gdmu_reminders as reminders
 from gdmu_config import ConfigStore
 from gdmu_token_sync import TokenInbox, fingerprint, fiddler_script, guard_candidate
+from gdmu_proxy_ui import EmbeddedSyncUI
 
 DEFAULTS = {
     'host': '', 'port': '465', 'security': 'SSL/TLS', 'username': '',
@@ -19,6 +20,7 @@ DEFAULTS = {
     'interval_minutes': '30', 'repeat_hours': '24',
     'remember_credentials': True, 'auto_start': False,
     'token_sync_enabled': False,
+    'proxy_auto_start': False, 'wechat_auto_wake': False, 'wechat_shortcut': '',
 }
 
 
@@ -70,13 +72,14 @@ class ReminderController:
         self.token_inbox = TokenInbox(self.directory, self.sync_note)
         self.last_sync_error = ''
         self.auto_timer = None
+        self.embedded = EmbeddedSyncUI(self)
         self.poll_timer = self.root.after(250, self.poll)
         if self.config_error:
             self.app.reminder_status.set('配置读取失败：' + self.config_error)
             self.log(self.config_error + ' 请修正 .env 或在窗口中重新保存配置。')
         elif auto_start and self.vars['auto_start'].get():
             self.auto_timer = self.root.after(500, self.startup)
-        self.app.sync_status.set('等待 Fiddler 登录响应；需先生成并安装同步片段。' if self.vars['token_sync_enabled'].get() else '未启用自动同步。新 Token 由微信小程序登录后产生。')
+        self.app.sync_status.set('等待内置同步登录响应；请在“内置同步设置”接入。' if self.vars['token_sync_enabled'].get() else '未启用自动同步。打开“内置同步设置”完成首次接入。')
 
     @property
     def active(self):
@@ -139,9 +142,12 @@ class ReminderController:
             if self.expired_intent:
                 self.waiting_for_token = True
                 self.desired_running = True
-            self.sync_note('已启用本地监听，请确认 Fiddler 已安装同步片段。')
+            self.sync_note('已启用本地响应接收；请在“内置同步设置”开启接入。')
         else:
+            self.vars['proxy_auto_start'].set(False)
             self.token_inbox.close()
+            if self.embedded.service.connected:
+                self.embedded.disconnect()
             if self.waiting_for_token:
                 self.stop('已关闭 Token 同步，提醒保持暂停。')
             self.sync_note('已关闭同步，不再接收登录响应。')
@@ -162,9 +168,9 @@ class ReminderController:
 
     def show_sync_help(self):
         try:
-            os.startfile(str(self.directory / 'Fiddler接入说明.md'))
+            os.startfile(str(self.directory / '内置同步说明.md'))
         except OSError:
-            messagebox.showinfo('Token 同步', '生成片段后，将其放入 Fiddler 的 OnBeforeResponse 函数内。保持软件和 Fiddler 运行，再在微信小程序查询，以捕获新的 code2Session 响应。', parent=self.root)
+            messagebox.showinfo('Token 同步', '打开“内置同步设置”，依次准备引擎、安装证书、开启同步。然后在微信小程序查询，等待新的登录响应。', parent=self.root)
 
     def pump_token_sync(self):
         if not self.vars['token_sync_enabled'].get():
@@ -223,6 +229,7 @@ class ReminderController:
         self.expired_intent = False
         self.desired_running = want_resume
         self.app.token.set(candidate)
+        self.embedded.validated()
         self.app.last_token_value = candidate
         saved = self.save_settings(silent=True, validate_auto=False)
         text = '新 Token 已通过余量查询验证并接入（指纹 ' + fingerprint(candidate) + '）。'
@@ -310,9 +317,9 @@ class ReminderController:
                         variable=self.vars['auto_start']).pack(anchor='w', pady=(8, 0))
         ttk.Label(prefs, text='保存设置、开始提醒或退出软件时写入配置；校验失败会暂停并显示原因。\n此选项用于启动本软件后的自动提醒，不会设置 Windows 开机启动。', foreground='#728096', wraplength=610).pack(anchor='w', pady=(8, 0))
         ttk.Button(prefs, text='打开配置所在文件夹', command=self.open_directory).pack(anchor='w', pady=(8, 0))
-        ttk.Checkbutton(prefs, text='启用 Fiddler 登录响应 Token 自动同步',
+        ttk.Checkbutton(prefs, text='接收小程序登录响应 Token 自动同步',
                         variable=self.vars['token_sync_enabled'], command=self.sync_changed).pack(anchor='w', pady=(10, 0))
-        ttk.Label(prefs, text='需一次性安装生成的 Fiddler 片段。只接收 code2Session 响应中的 Token；不会自行触发微信登录。', foreground='#728096', wraplength=610).pack(anchor='w', pady=(4, 0))
+        ttk.Label(prefs, text='在主窗口打开内置同步设置并接入。新 Token 仍由真实微信小程序登录产生。', foreground='#728096', wraplength=610).pack(anchor='w', pady=(4, 0))
 
         rules = ttk.LabelFrame(body, text='提醒规则', padding=14)
         rules.pack(fill='x', pady=(14, 0))
@@ -586,6 +593,7 @@ class ReminderController:
         except queue.Empty:
             pass
         self.pump_token_sync()
+        self.embedded.poll()
         if self.pending_token_resume and self.desired_running and not self.app.busy and not self.preflight_busy and not self.token_validation_busy:
             self.pending_token_resume = False
             self.start(automatic=True)
@@ -599,6 +607,10 @@ class ReminderController:
         self.settings_widgets = []
 
     def close(self):
+        try:
+            self.embedded.close()
+        except (OSError, ValueError) as exc:
+            messagebox.showwarning('请检查网络代理', '代理恢复未完成：' + str(exc) + '\n请在 Windows 网络设置中检查代理，或重新启动软件后使用“恢复网络”。', parent=self.root)
         self.root.after_cancel(self.poll_timer)
         self.cancel_startup()
         self.token_sync_epoch += 1

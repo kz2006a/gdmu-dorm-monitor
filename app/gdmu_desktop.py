@@ -38,7 +38,7 @@ class BalanceApp:
         self.reminders = None
         self.sync_status = tk.StringVar(value='未启用 Token 自动同步。')
         self.syncing_target = False
-        root.title('广东医 · 宿舍水电查询 v1.3.0')
+        root.title('广东医 · 宿舍水电查询 v1.4.0')
         height = max(600, min(860, root.winfo_screenheight() - 100))
         root.geometry(f'820x{height}')
         root.minsize(720, 600)
@@ -110,9 +110,9 @@ class BalanceApp:
         self.label(body, 'Token 可保存到软件目录 .env，重启自动读取；保存选项位于 SMTP 与提醒设置。', fg='#728096', font=('Microsoft YaHei UI', 9)).pack(anchor='w')
         sync = tk.Frame(body, bg='#f3f6fb')
         sync.pack(fill='x', pady=(10, 0))
-        self.sync_check = ttk.Checkbutton(sync, text='启用 Fiddler Token 同步', command=lambda: self.reminders.sync_changed())
+        self.sync_check = ttk.Checkbutton(sync, text='接收新 Token', command=lambda: self.reminders.sync_changed())
         self.sync_check.pack(side='left')
-        ttk.Button(sync, text='生成同步脚本', command=lambda: self.reminders.generate_sync_script()).pack(side='left', padx=8)
+        ttk.Button(sync, text='内置同步设置', command=lambda: self.reminders.embedded.open()).pack(side='left', padx=8)
         ttk.Button(sync, text='接入说明', command=lambda: self.reminders.show_sync_help()).pack(side='left')
         self.label(body, '', textvariable=self.sync_status, fg='#526581', font=('Microsoft YaHei UI', 9), wraplength=650, justify='left').pack(anchor='w', pady=(5, 0))
 

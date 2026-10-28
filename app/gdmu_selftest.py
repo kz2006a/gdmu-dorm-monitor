@@ -84,8 +84,34 @@ def run(report_path):
             second.reminders.open(); second.reminders.dialog.withdraw()
             second.root.update_idletasks()
             second.reminders.close_dialog()
+            second.reminders.embedded.open()
+            second.reminders.embedded.dialog.withdraw()
+            second.root.update_idletasks()
+            assert second.reminders.embedded.dialog.winfo_exists()
+            second.reminders.embedded.dialog.destroy()
+            second.reminders.embedded.dialog = None
             second.close()
-            report['checks'].append('SMTP/preferences settings window')
+            report['checks'].append('SMTP/preferences and embedded HTTPS settings windows')
+        if '--with-proxy-engine' in __import__('sys').argv:
+            import shutil
+            from gdmu_proxy import ProxyService, certificate_thumbprint
+            release = config.software_directory()
+            with tempfile.TemporaryDirectory(dir=Path(report_path).resolve().parent) as folder:
+                folder = Path(folder)
+                (folder / 'app').mkdir()
+                (folder / 'runtime/https').mkdir(parents=True)
+                for name in ('gdmu_proxy.py', 'gdmu_proxy_addon.py'):
+                    shutil.copy2(release / 'app' / name, folder / 'app' / name)
+                shutil.copy2(release / 'runtime/https/mitmdump.exe', folder / 'runtime/https/mitmdump.exe')
+                service = ProxyService(folder)
+                try:
+                    service.prepare()
+                    assert service.alive
+                    assert len(certificate_thumbprint(folder)) == 40
+                    assert not service.lease.exists()
+                finally:
+                    service.shutdown()
+                report['checks'].append('Frozen launcher starts bundled independent TLS engine; reads certificate with bundled x509; no trust or proxy mutation')
         report['passed'] = True
     except BaseException:
         report['error'] = traceback.format_exc()

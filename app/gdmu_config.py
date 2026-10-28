@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sys
 
-VERSION = '1.3.0'
+VERSION = '1.4.0'
 FIELDS = {
     'host': 'SMTP_HOST', 'port': 'SMTP_PORT', 'security': 'SMTP_SECURITY',
     'username': 'SMTP_USERNAME', 'sender': 'SMTP_SENDER', 'recipients': 'SMTP_RECIPIENTS',
@@ -13,8 +13,10 @@ FIELDS = {
     'repeat_hours': 'LOW_BALANCE_REPEAT_HOURS', 'remember_credentials': 'REMEMBER_CREDENTIALS',
     'auto_start': 'AUTO_START',
     'token_sync_enabled': 'TOKEN_SYNC_ENABLED',
+    'proxy_auto_start': 'PROXY_AUTO_START', 'wechat_auto_wake': 'WECHAT_AUTO_WAKE',
+    'wechat_shortcut': 'WECHAT_SHORTCUT',
 }
-BOOLS = {'daily_enabled', 'threshold_enabled', 'remember_credentials', 'auto_start', 'token_sync_enabled'}
+BOOLS = {'daily_enabled', 'threshold_enabled', 'remember_credentials', 'auto_start', 'token_sync_enabled', 'proxy_auto_start', 'wechat_auto_wake'}
 
 
 def software_directory():
@@ -95,7 +97,7 @@ class ConfigStore:
         values['ROOM_ID'] = str(target.get('room', '9632'))
         values['DORM_NAME'] = str(target.get('name', ''))
         lines = [
-            '# 广东医宿舍水电查询 v1.3.0 环境配置文件',
+            '# 广东医宿舍水电查询 v1.4.0 环境配置文件',
             '# 本文件由软件读写，不会执行其中的内容。',
             '# 记住凭证后会包含 Token 和 SMTP 授权码，请勿分享此文件。',
             '# 字符串使用双引号；AUTO_START=true 表示启动软件后校验并自动提醒。',
