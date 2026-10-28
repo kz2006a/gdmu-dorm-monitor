@@ -26,3 +26,19 @@ dist/
 *.dll
 *.zip
 tests/.tmp/
+
+# Local tools, editors, logs and test output
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.spec
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.tox/
+runtime/
+tools/

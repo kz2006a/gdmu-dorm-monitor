@@ -1,0 +1,23 @@
+name: 功能建议
+description: 提出使用体验或功能改进建议
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题？
+      description: 描述实际使用场景及当前困难。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的行为
+      description: 希望在哪里进行什么操作、得到什么结果。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案或补充说明
+      description: 可选。请使用虚构数据举例，勿填写个人凭证。

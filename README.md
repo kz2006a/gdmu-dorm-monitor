@@ -1,44 +1,85 @@
 # 广东医 · 宿舍水电监测
 
-Windows 桌面工具：选择宿舍、查询水电余量、Windows 通知、可选 SMTP 邮件，以及真实微信小程序登录响应同步。
+[![Windows CI](https://github.com/kz2006a/gdmu-dorm-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/kz2006a/gdmu-dorm-monitor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kz2006a/gdmu-dorm-monitor)](https://github.com/kz2006a/gdmu-dorm-monitor/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-当前版本：**v1.7.1**。本项目是个人工具，接口和数据以学校系统为准。
+面向广东医科大学宿舍的 Windows 桌面工具：查询水电余量、持续监测、低阈值警告，以及真实微信小程序登录同步。
 
-## 使用
+当前稳定版：**v1.7.1**。接口和读数以学校系统为准。
 
-从 [Releases](https://github.com/kz2006a/gdmu-dorm-monitor/releases) 下载完整 Windows 程序包，完整解压后运行 EXE，保留同级 `app`、`_internal`、`runtime`。
+## 下载与首次使用
 
-首次使用：**微信连接 → 选择宿舍 → 自动保存并查询 → 按需开始监测**。新 Token 验证后自动加载列表；重新打开后按 ID 恢复上次宿舍。
+从 [最新 Release](https://github.com/kz2006a/gdmu-dorm-monitor/releases/latest) 下载适合的附件：
 
-- 不需要邮箱即可使用 Windows 通知；邮件为可选通道。
-- 自动查询和网络重试最低间隔 30 分钟。
-- Token 过期先静默刷新；失败后仅尝试一次失败通知并暂停监测。
-- 软件不生成虚拟微信 code；微信仍可能需要人工完成登录或进入查询页。
-- 退出/休眠期间不能监测，不会自动设置 Windows 开机启动。
+| 附件 | 用途 |
+|---|---|
+| `*-windows-x64.zip` | 新用户使用的完整 Windows 程序包，无需安装 Python |
+| `*-update.zip` | 指定版本的覆盖升级包，适用范围见 Release 说明 |
+| `*-source.zip` | 从源码运行或参与开发 |
 
-详见 [使用说明](docs/USER_GUIDE.md)、[构建说明](docs/BUILD.md)、[变更日志](CHANGELOG.md)。
+1. 完整解压程序包，运行其中的 EXE，保留同级 `app`、`_internal` 和 `runtime` 文件夹。
+2. 在 Windows 微信中打开“广东医缴费”，点击右上角 **“⋯” → “添加到电脑桌面”**，创建小程序快捷方式。
+3. 进入软件“微信连接”，选择该快捷方式，勾选“登录过期时自动打开小程序”并保存连接设置，再点击“连接并获取登录”。
+4. 按界面提示完成证书、代理接入和真实微信登录。获得有效 Token 后自动加载宿舍，选择房间后保存并查询。
+5. 在“监测设置”配置通知与阈值，保存后到总览开始监测。默认 Windows 通知，无须配置邮箱。
+
+快捷方式的创建、验证和自动续接设置详见[首次使用图文教程](docs/USER_GUIDE.md#首次使用)。
+
+## 功能
+
+- 按校区、楼栋和房间选择宿舍；重新打开后按内部 ID 恢复上次选择。
+- Windows 余量通知、低阈值警告、固定时间提醒；SMTP 邮件为可选通道。
+- 自动查询及网络失败重试的最低间隔为 30 分钟。
+- Token 过期先静默恢复；最终失败才尝试一次失败通知并暂停监测。
+- 可选保存凭证、打开软件后自动连接微信和自动开始监测。
+
+自动恢复需要有效快捷方式、可用的同步连接和真实微信登录。微信仍可能需要手动完成学校登录或进入查询页。最小化可继续监测；退出或休眠期间不能监测。
 
 ## 从源码运行
 
-已验证环境为 Windows、Python 3.12、Tkinter；依赖版本保留与已有打包环境一致。
+支持 Windows、Python 3.12（含 Tkinter）：
 
 ```powershell
+git clone https://github.com/kz2006a/gdmu-dorm-monitor.git
+cd gdmu-dorm-monitor
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe run.py
 ```
 
-查询功能可直接运行；内置 HTTPS 同步另需放入官方 `mitmdump.exe`，见构建说明。协议自检仅使用虚构编号和合成余额：
+查询可直接运行。源码的内置 HTTPS 同步另需准备官方 `mitmdump.exe`，路径及摘要校验见[构建说明](docs/BUILD.md)。
 
 ```powershell
-python app/gdmu_balance.py --self-test
-python -m unittest discover -s tests -p "test_*.py" -v
+.venv\Scripts\python.exe app/gdmu_balance.py --self-test
+.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-## 配置与贡献
+测试使用虚构数据和模拟服务，不需要学校账号或 SMTP 凭证。
 
-本地 `.env` 可能保存 Token、邮件授权码；`data/` 可能包含证书私钥，均已忽略。请勿将这些文件、抓包或真实登录响应提交到 Issues/PR。
+## 项目目录
 
-本仓库不包含原始微信包、学校图片或个人运行数据。源码中的离线样例已经改为合成数据。历史版本归档的来源和局限见每版 Release；后整理的版本不会冒充当时的 Git 提交。
+```text
+app/          查询、界面、配置、监测和微信同步
+launcher/     Windows EXE 启动器
+tests/        离线回归测试
+docs/         使用、构建、架构及历史来源
+third_party/  第三方许可和引擎来源
+.github/      问题模板、PR 模板及 CI
+run.py        源码入口
+build.py      本地打包入口
+```
 
-使用 MIT 许可发布本项目自有代码；第三方组件见 [Third-party notices](THIRD_PARTY_NOTICES.md)。
+## 文档与参与
+
+- [使用说明与常见问题](docs/USER_GUIDE.md)
+- [构建说明](docs/BUILD.md) · [目录与架构](docs/ARCHITECTURE.md)
+- [变更记录](CHANGELOG.md) · [源码来源](docs/SOURCE_PROVENANCE.md)
+- [贡献指南](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [获取帮助](SUPPORT.md)
+- [安全政策与私密报告](SECURITY.md)
+
+本地 `.env` 可能保存明文 Token 和邮件授权码，`data/` 可能包含证书私钥。不要将个人配置、运行记录、抓包和原始登录响应提交到仓库或公开讨论。
+
+## 许可
+
+项目自有代码采用 [MIT 许可证](LICENSE)。第三方组件及文档截图中的软件界面、商标保留各自权利，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -4,3 +4,7 @@
 *.md text eol=lf
 *.json text eol=lf
 third_party/licenses/** -whitespace
+*.yml text eol=lf
+*.yaml text eol=lf
+*.cmd text eol=crlf
+*.png binary

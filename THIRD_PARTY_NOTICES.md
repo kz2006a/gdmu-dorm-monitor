@@ -11,4 +11,8 @@ Project-authored source is distributed under MIT. Third-party components retain 
 | Tcl / Tk | Desktop widgets | `third_party/licenses/Tcl-LICENSE.txt`, `Tk-LICENSE.txt` |
 | mitmproxy 12.3.0 | Optional embedded `mitmdump` engine, official binary | `third_party/licenses/mitmproxy-LICENSE.txt` |
 
-The bundled engine provenance and SHA-256 are recorded in `third_party/mitmproxy.json`. No upstream mini-program bundle, school artwork, private key, or user session is part of this repository. Dependencies are not relicensed by the project MIT file.
+The bundled engine provenance and SHA-256 are recorded in `third_party/mitmproxy.json`. No upstream mini-program bundle, private key, or user session is part of this repository. Dependencies are not relicensed by the project MIT file.
+
+## Documentation screenshots
+
+`docs/images/wechat-desktop-shortcut.png` illustrates the Windows WeChat mini-program menu. The depicted software interface and trademarks retain their respective owners' rights; the project MIT license does not relicense them.

@@ -1,0 +1,52 @@
+name: 问题反馈
+description: 报告查询、监测、微信连接或界面问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请先查看使用说明。勿上传 Token、SMTP 授权码、个人配置、抓包、原始登录响应或私钥；漏洞使用私密报告渠道。
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本
+      placeholder: v1.7.1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      description: Windows 版本及完整包或升级包；源码运行时注明 Python 版本。
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题位置
+      options:
+        - 水电查询或宿舍选择
+        - 微信连接或 Token 更新
+        - Windows 通知或邮件
+        - 界面或窗口缩放
+        - 启动或打包
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 从哪个页面开始，进行了什么操作，何时出现问题。
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: 预期结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 已脱敏错误信息或截图
+      description: 可选。遮挡姓名、学号、宿舍、邮箱及所有凭证。
