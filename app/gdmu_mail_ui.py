@@ -11,6 +11,7 @@ import gdmu_reminders as reminders
 from gdmu_config import ConfigStore
 from gdmu_token_sync import TokenInbox, fingerprint, fiddler_script, guard_candidate
 from gdmu_proxy_ui import EmbeddedSyncUI
+from gdmu_notifications import NativeNotifier
 
 DEFAULTS = {
     'host': '', 'port': '465', 'security': 'SSL/TLS', 'username': '',
@@ -23,6 +24,7 @@ DEFAULTS = {
     'proxy_auto_start': False, 'wechat_auto_wake': False, 'wechat_shortcut': '',
     'wechat_close_after_token': True, 'wechat_window_title': '',
     'wechat_window_class': '', 'wechat_window_process': '',
+    'email_enabled': False, 'desktop_enabled': True, 'desktop_each_query': True,
 }
 
 
@@ -61,6 +63,9 @@ class ReminderController:
         self.settings_widgets = []
         self.log_widget = None
         self.logs = []
+        self.notifier = NativeNotifier(self.root)
+        if loaded.get('interval_adjusted'):
+            self.log('旧配置的自动查询间隔已提升为 30 分钟。')
         self.test_busy = False
         self.desired_running = False
         self.pending_retarget = False
@@ -106,12 +111,14 @@ class ReminderController:
     def save_settings(self, silent=False, validate_auto=True):
         try:
             values = self.values()
+            reminders.Rules.from_values(values)
             if validate_auto and values['auto_start']:
                 if not values['remember_credentials']:
-                    raise ValueError('启动后自动提醒需要勾选保存 Token 和 SMTP 授权码。')
+                    raise ValueError('启动后自动监测需要勾选保存凭证，以便读取 Token。')
                 if not self.app.token.get().strip():
                     raise ValueError('请先填写 Token，再保存自动提醒设置。')
-                reminders.SMTPConfig.from_values(values, self.password.get())
+                if values['email_enabled'] and not values['desktop_enabled']:
+                    reminders.SMTPConfig.from_values(values, self.password.get())
                 reminders.Rules.from_values(values)
             try:
                 building, room, name = self.target()
@@ -308,6 +315,17 @@ class ReminderController:
                 self.events.put((None, 'test_error', reminders.error_text(exc)))
         threading.Thread(target=worker, daemon=True).start()
 
+    def test_desktop(self):
+        try:
+            self.notifier.prepare()
+            if not self.notifier.show('广东医校园水电 · 测试通知',
+                '桌面通知测试已提交。\n正式监测通知会显示所选宿舍的剩余电量、水量及低阈值警告。'):
+                raise ValueError('Windows 未接受桌面通知。')
+            self.log('测试通知已提交 Windows；若未弹出，请检查系统通知与免打扰设置。')
+        except (OSError,ValueError) as exc:
+            self.log('桌面通知测试失败：'+str(exc))
+            messagebox.showerror('桌面通知失败',str(exc),parent=self.dialog or self.root)
+
     def target(self):
         bi, ri = self.app.building_box.current(), self.app.room_box.current()
         if bi >= 0 and ri >= 0:
@@ -340,7 +358,15 @@ class ReminderController:
             token = self.app.token.get().strip()
             if not token:
                 raise ValueError('请先在主窗口填写 Token。')
-            config = reminders.SMTPConfig.from_values(self.values(), self.password.get())
+            values = self.values()
+            config = None
+            if values['email_enabled']:
+                try:
+                    config = reminders.SMTPConfig.from_values(values, self.password.get())
+                except ValueError:
+                    if not values['desktop_enabled']:
+                        raise
+                    self.log('邮件配置不完整，本次继续 Windows 通知监测；邮件暂不发送。')
             rules = reminders.Rules.from_values(self.values())
             building, room, name = self.target()
         except ValueError as exc:
@@ -362,10 +388,12 @@ class ReminderController:
         self.validation_cancel = cancel
         old_monitor = self.monitor
         self.lock_settings(True)
-        self.app.reminder_status.set(f'正在校验 Token 和 SMTP 登录：{name}…')
+        self.app.reminder_status.set(f'正在校验 Token'+(' 和 SMTP 登录' if config is not None else '')+f'：{name}…')
         self.log(f'准备监测 {name}，正在校验凭证。')
+        desktop_enabled = self.vars['desktop_enabled'].get()
         def validate():
             try:
+                actual_config = config
                 if old_monitor is not None:
                     old_monitor.stop()
                     while old_monitor.thread and old_monitor.thread.is_alive():
@@ -376,10 +404,17 @@ class ReminderController:
                 info = self.backend.query_balance(token, building, room)
                 if cancel.is_set():
                     return
-                reminders.check_smtp_login(config)
+                if config is not None:
+                    try:
+                        reminders.check_smtp_login(config)
+                    except Exception as exc:
+                        if not desktop_enabled:
+                            raise
+                        actual_config = None
+                        self.events.put((generation,'warning','邮件校验未通过，继续本地监测：'+reminders.error_text(exc)))
                 if cancel.is_set():
                     return
-                self.events.put((generation, 'validated', (token, building, room, name, config, rules, info)))
+                self.events.put((generation, 'validated', (token, building, room, name, actual_config, rules, info)))
             except Exception as exc:
                 if not cancel.is_set():
                     self.events.put((generation, 'validation_error', (reminders.error_text(exc), automatic)))
@@ -392,9 +427,17 @@ class ReminderController:
         self.expired_intent = False
         if not self.desired_running:
             return
+        desktop = None
+        if self.vars['desktop_enabled'].get():
+            try:
+                self.notifier.prepare()
+                desktop = self.notifier.show
+            except (OSError,ValueError) as exc:
+                self.log('Windows 通知未就绪，监测仍会继续：'+str(exc))
         self.monitor = reminders.Monitor(self.backend, token, building, room, name, config, rules,
             lambda kind, data: self.events.put((generation, kind, data)),
-            state_path=self.directory / 'reminder-history.json', initial_info=info)
+            state_path=self.directory / 'reminder-history.json', initial_info=info,
+            desktop_notify=desktop, desktop_each_query=self.vars['desktop_each_query'].get())
         self.lock_settings(True)
         self.app.reminder_status.set(f'提醒运行中：{name}；每 {rules.interval_minutes} 分钟检查。')
         self.log(f'凭证校验成功，已开始监测：{name}。固定时间使用北京时间。')
@@ -519,6 +562,7 @@ class ReminderController:
         self.settings_widgets = []
 
     def close(self):
+        self.notifier.close()
         try:
             self.embedded.close()
         except (OSError, ValueError) as exc:

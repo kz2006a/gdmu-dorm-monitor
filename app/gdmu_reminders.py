@@ -109,15 +109,13 @@ class Rules:
             limits.append(limit)
         if values.get('threshold_enabled') and all(x is None for x in limits):
             raise ValueError('低余量提醒请至少填写电量或水量其中一个阈值。')
-        if not daily and all(x is None for x in limits):
-            raise ValueError('请启用固定时间提醒或低余量提醒。')
         try:
             interval = int(values.get('interval_minutes', 30))
             repeat = int(values.get('repeat_hours', 24))
         except (ValueError, TypeError):
             raise ValueError('查询间隔和重复提醒间隔必须是整数。') from None
-        if not 5 <= interval <= 1440:
-            raise ValueError('查询间隔请设置为 5 到 1440 分钟。')
+        if not 30 <= interval <= 1440:
+            raise ValueError('持续监测查询间隔请设置为 30 到 1440 分钟。')
         if not 1 <= repeat <= 168:
             raise ValueError('持续低余量的重复提醒间隔请设置为 1 到 168 小时。')
         return cls(daily, *limits, interval, repeat)
@@ -276,7 +274,8 @@ def save_json(path, data):
 
 class Monitor:
     def __init__(self, backend, token, building, room, name, smtp, rules, notify,
-                 state_path=None, sender=None, clock=now_local, initial_info=None):
+                 state_path=None, sender=None, clock=now_local, initial_info=None,
+                 desktop_notify=None, desktop_each_query=True):
         self.backend, self.token = backend, token
         self.building, self.room, self.name = building, room, name
         self.smtp, self.rules, self.notify = smtp, rules, notify
@@ -287,6 +286,14 @@ class Monitor:
         self.dorm_key = f'{building}:{room}'
         self.histories = histories
         self.planner = Planner(rules, clock(), histories.get(self.dorm_key))
+        self.desktop_planner = Planner(rules, clock(), histories.get('desktop:'+self.dorm_key))
+        self.desktop_notify = desktop_notify
+        self.desktop_each_query = desktop_each_query
+        self.last_info = None
+        self.last_info_at = None
+        self.mail_retry_after = 0
+        self.desktop_retry_after = 0
+        self.desktop_last_failure_notice = None
         self.next_poll = 0.0
         self.retry_after = 0.0
         self.failures = 0
@@ -303,6 +310,7 @@ class Monitor:
     def save_state(self):
         if self.state_path:
             self.histories[self.dorm_key] = self.planner.history
+            self.histories['desktop:'+self.dorm_key] = self.desktop_planner.history
             try:
                 save_json(self.state_path, self.histories)
             except OSError:
@@ -313,22 +321,30 @@ class Monitor:
         monotonic = time.monotonic() if monotonic is None else monotonic
         if self.stop_event.is_set() or monotonic < self.retry_after:
             return
-        if monotonic < self.next_poll and not self.planner.due_daily(moment):
+        fresh = monotonic >= self.next_poll
+        due = (self.smtp is not None and monotonic >= self.mail_retry_after and self.planner.due_daily(moment)) or (
+            self.desktop_notify is not None and monotonic >= self.desktop_retry_after and self.desktop_planner.due_daily(moment))
+        if not fresh and (not due or self.last_info is None):
             return
-        self.next_poll = monotonic + self.rules.interval_minutes * 60
+        interval = max(30,self.rules.interval_minutes)*60
         try:
-            if self.initial_info is not None:
+            if not fresh:
+                info = self.last_info
+            elif self.initial_info is not None:
                 info, self.initial_info = self.initial_info, None
             else:
                 info = self.backend.query_balance(self.token, self.building, self.room)
             if self.stop_event.is_set():
                 return
-            self.failures = 0
-            self.notify('balance', {'info': info, 'time': moment, 'name': self.name})
+            if fresh:
+                self.next_poll = monotonic + interval
+                self.failures = 0
+                self.last_info,self.last_info_at = info,moment
+                self.notify('balance', {'info': info, 'time': moment, 'name': self.name})
         except Exception as exc:
             self.failures += 1
-            self.retry_after = monotonic + 60
-            self.next_poll = monotonic + 60
+            self.retry_after = monotonic + interval
+            self.next_poll = monotonic + interval
             text = error_text(exc)
             self.notify('error', '余量查询失败：' + text)
             expired = isinstance(exc, ValueError) and '登录凭证已失效' in str(exc)
@@ -338,16 +354,29 @@ class Monitor:
                 self.stop_event.set()
                 self.notify('stopped', 'Token 已失效，提醒已停止。请更新 Token 后重新启动。')
             return
-        reasons, keys = self.planner.plan(info, moment)
-        # Persist recovery even when a simultaneous daily email fails.
+        if self.desktop_notify is not None and monotonic >= self.desktop_retry_after:
+            from gdmu_notifications import balance_notice
+            desktop_reasons, desktop_keys = self.desktop_planner.plan(info,moment)
+            if desktop_reasons or (fresh and self.desktop_each_query):
+                warning=any(key.startswith('low:') for key in desktop_keys)
+                try:
+                    title='宿舍水电低余量警告' if warning else '宿舍水电余量'
+                    if not self.desktop_notify(title,balance_notice(self.name,info,desktop_reasons,self.last_info_at),warning):
+                        raise ValueError('Windows 未接受通知，请检查系统通知设置。')
+                    self.desktop_planner.commit(desktop_keys,moment)
+                    self.notify('desktop','低余量警告已提交 Windows 通知。' if warning else '水电余量已提交 Windows 通知。')
+                except Exception as exc:
+                    self.desktop_retry_after=monotonic+interval
+                    self.notify('error','桌面通知失败，下轮监测时重试：'+error_text(exc))
+        reasons, keys = self.planner.plan(info, moment) if self.smtp is not None else ([],[])
         self.save_state()
         if not reasons:
-            self.notify('checked', '余量已更新，目前没有需要发送的提醒。')
+            self.notify('checked', '余量已更新，持续监测中。')
             return
-        if self.stop_event.is_set():
+        if self.stop_event.is_set() or monotonic < self.mail_retry_after:
             return
         try:
-            result = self.sender(self.smtp, f'宿舍水电提醒｜{self.name}', balance_body(self.name, info, reasons, moment))
+            result = self.sender(self.smtp, f'宿舍水电提醒｜{self.name}', balance_body(self.name, info, reasons, self.last_info_at))
             if result['accepted'] <= 0:
                 raise ValueError('邮件未被任何收件人的服务器接受。')
             self.planner.commit(keys, moment)
@@ -357,13 +386,19 @@ class Monitor:
                 text += f' 有 {result["refused"]} 个收件人被拒绝，请检查地址。'
             self.notify('mail', text)
         except Exception as exc:
-            # Do not consume reminders on failed delivery. Retry with fresh data.
-            self.retry_after = monotonic + 60
-            self.next_poll = monotonic + 60
-            self.notify('error', '邮件发送失败，将在约 1 分钟后重试：' + error_text(exc))
+            self.mail_retry_after = monotonic + interval
+            self.notify('error', '邮件发送失败，下轮监测时重试：' + error_text(exc))
 
     def failure_notice(self, text, moment):
         if self.stop_event.is_set():
+            return
+        if self.desktop_notify is not None and (self.desktop_last_failure_notice is None or moment-self.desktop_last_failure_notice>=timedelta(hours=6)):
+            try:
+                if self.desktop_notify('宿舍水电监测异常',f'宿舍：{self.name}\n无法更新余量：{text}\n请打开软件检查登录或网络。',True):
+                    self.desktop_last_failure_notice=moment
+            except Exception:
+                self.notify('warning','监测异常，桌面通知未能提交。')
+        if self.smtp is None:
             return
         if self.last_failure_notice and moment - self.last_failure_notice < timedelta(hours=6):
             return
@@ -383,5 +418,5 @@ class Monitor:
                 self.step()
             except Exception:
                 self.notify('error', '监测遇到异常，请检查配置或重新启动提醒。')
-                self.retry_after = time.monotonic() + 60
+                self.retry_after = time.monotonic() + max(30,self.rules.interval_minutes)*60
             self.stop_event.wait(3)

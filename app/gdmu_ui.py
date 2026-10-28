@@ -156,7 +156,7 @@ class DashboardUI:
         self.app=app;self.root=app.root
         self.pages={};self.nav={};self.page='overview';self.last_log=None;self.last_refresh=0
         self.proxy_badge=tk.StringVar(self.root,value='微信同步 · 未接入')
-        self.mail_badge=tk.StringVar(self.root,value='邮件提醒 · 未启动')
+        self.mail_badge=tk.StringVar(self.root,value='持续监测 · 未启动')
         self.mail_summary=tk.StringVar(self.root)
         self.rule_summary=tk.StringVar(self.root)
         self.daily_summary=tk.StringVar(self.root)
@@ -171,7 +171,7 @@ class DashboardUI:
         mark=icon(header,'home',48);mark.pack(side='left',padx=(0,12))
         brand=tk.Frame(header,bg=WHITE);brand.pack(side='left')
         text(brand,'广东医 · 校园水电',17,INK,True).pack(anchor='w')
-        text(brand,'宿舍余量查询与提醒',9,MUTED).pack(anchor='w',pady=(3,0))
+        text(brand,'宿舍余量查询与桌面提醒',9,MUTED).pack(anchor='w',pady=(3,0))
         states=tk.Frame(header,bg=WHITE);states.pack(side='right')
         text(states,'',9,BLUE,textvariable=self.proxy_badge).pack(anchor='e')
         text(states,'',9,MUTED,textvariable=self.mail_badge).pack(anchor='e',pady=(5,0))
@@ -185,10 +185,10 @@ class DashboardUI:
         sidebar=tk.Frame(shell,bg=WHITE,width=164)
         sidebar.pack(side='left',fill='y');sidebar.pack_propagate(False)
         text(sidebar,'校园服务',9,MUTED).pack(anchor='w',padx=20,pady=(24,10))
-        for key,label in (('overview','水电总览'),('login','登录与同步'),('mail','邮件提醒'),('logs','运行记录')):
+        for key,label in (('overview','水电总览'),('login','登录与同步'),('mail','监测与提醒'),('logs','运行记录')):
             btn=ttk.Button(sidebar,text=label,style='Nav.TButton',command=lambda k=key:self.show(k))
             btn.pack(fill='x',padx=10,pady=3);self.nav[key]=btn
-        text(sidebar,'个人查询工具 · v1.5.0\n数据以缴费系统为准',8,MUTED,justify='left').pack(side='bottom',anchor='w',padx=20,pady=22)
+        text(sidebar,'个人查询工具 · v1.6.0\n数据以缴费系统为准',8,MUTED,justify='left').pack(side='bottom',anchor='w',padx=20,pady=22)
         content=ScrollPage(shell,BG);content.frame.pack(side='left',fill='both',expand=True)
         self.content=content;a.canvas=content.canvas
         self.content.body.configure(padx=24,pady=23)
@@ -196,7 +196,7 @@ class DashboardUI:
         for key,title,subtitle in (
             ('overview','水电总览','查看当前宿舍的水电余量，及时安排充值。'),
             ('login','登录与同步','连接真实微信登录，自动接入新的查询凭证。'),
-            ('mail','邮件提醒','按固定时间或余量阈值，接收宿舍水电通知。'),
+            ('mail','监测与提醒','不配置邮箱也能持续监测，用 Windows 通知查看水电余量。'),
             ('logs','运行记录','查看查询、登录同步与邮件提醒的处理结果。')):
             page=tk.Frame(content.body,bg=BG);self.pages[key]=page
             text(page,title,21,INK,True).pack(anchor='w')
@@ -249,7 +249,7 @@ class DashboardUI:
         shortcuts=Panel(p);shortcuts.pack(fill='x',pady=(0,16));b=shortcuts.body
         self.heading(b,'常用服务')
         grid=tk.Frame(b,bg=WHITE);grid.pack(fill='x')
-        for col,title,kind,command in ((0,'微信同步','sync',lambda:self.app.reminders.embedded.open()),(1,'邮件设置','mail',lambda:self.app.reminders.open()),(2,'运行记录','log',lambda:self.show('logs')),(3,'保存设置','building',lambda:self.app.reminders.save_settings())):
+        for col,title,kind,command in ((0,'微信同步','sync',lambda:self.app.reminders.embedded.open()),(1,'监测设置','mail',lambda:self.app.reminders.open()),(2,'运行记录','log',lambda:self.show('logs')),(3,'开始监测','building',lambda:self.app.reminders.start())):
             grid.columnconfigure(col,weight=1,uniform='shortcut')
             item=tk.Frame(grid,bg=WHITE);item.grid(row=0,column=col,sticky='ew')
             icon(item,kind,44,tile=True).pack()
@@ -287,7 +287,7 @@ class DashboardUI:
         ttk.Button(b,text='查看接入说明',style='Quiet.TButton',command=lambda:a.reminders.show_sync_help()).pack(anchor='w',pady=(9,0))
         panel=Panel(p);panel.pack(fill='x');b=panel.body
         self.heading(b,'登录凭证')
-        text(b,'可手动填写自己的 Token；保存凭证选项位于邮件设置。',9,MUTED,wraplength=640).pack(anchor='w',pady=(0,14))
+        text(b,'可手动填写自己的 Token；保存凭证选项位于监测设置。',9,MUTED,wraplength=640).pack(anchor='w',pady=(0,14))
         a.token_entry=ttk.Entry(b,textvariable=a.token,show='●');a.token_entry.pack(fill='x');a.editable.append(a.token_entry)
         a.token_entry.bind('<KeyRelease>',a.token_changed)
         a.token_entry.bind('<<Paste>>',lambda e:a.root.after_idle(a.token_changed))
@@ -307,9 +307,9 @@ class DashboardUI:
         text(b,'',12,BLUE,True,textvariable=self.mail_badge).pack(anchor='w')
         text(b,'',10,MUTED,textvariable=a.reminder_status,wraplength=650,justify='left').pack(anchor='w',pady=(8,16))
         row=tk.Frame(b,bg=WHITE);row.pack(fill='x')
-        ttk.Button(row,text='开始提醒',style='Primary.TButton',command=lambda:a.reminders.start()).pack(side='left')
-        ttk.Button(row,text='停止提醒',command=lambda:a.reminders.stop()).pack(side='left',padx=8)
-        ttk.Button(row,text='SMTP 与提醒设置',command=lambda:a.reminders.open()).pack(side='right')
+        ttk.Button(row,text='开始监测',style='Primary.TButton',command=lambda:a.reminders.start()).pack(side='left')
+        ttk.Button(row,text='停止监测',command=lambda:a.reminders.stop()).pack(side='left',padx=8)
+        ttk.Button(row,text='通知与监测设置',command=lambda:a.reminders.open()).pack(side='right')
         panel=Panel(p);panel.pack(fill='x');b=panel.body
         self.heading(b,'当前提醒规则')
         for title,var in (('固定时间',self.daily_summary),('低余量提醒',self.rule_summary),('邮件服务',self.mail_summary)):
@@ -339,13 +339,13 @@ class DashboardUI:
         self.last_refresh=now
         connected=ctl.embedded.service.connected
         self.proxy_badge.set('微信同步 · '+('已接入' if connected else '未接入'))
-        self.mail_badge.set('邮件提醒 · '+('监测中' if ctl.active else '等待新 Token' if ctl.waiting_for_token else '校验中' if ctl.preflight_busy else '未启动'))
+        self.mail_badge.set('持续监测 · '+('监测中' if ctl.active else '等待新 Token' if ctl.waiting_for_token else '校验中' if ctl.preflight_busy else '未启动'))
         values=ctl.values()
         self.daily_summary.set(('每天 '+values['daily_times']+'（北京时间）') if values['daily_enabled'] else '未开启固定时间提醒')
         self.rule_summary.set(('电量 ≤ '+(values['electricity_limit'] or '未设置')+' 度  /  水量 ≤ '+(values['water_limit'] or '未设置')+' 吨\n每 '+values['interval_minutes']+' 分钟查询；持续不足每 '+values['repeat_hours']+' 小时提醒') if values['threshold_enabled'] else '未开启低余量提醒')
-        self.mail_summary.set((values['host']+' · '+values['security']+' · '+str(values['port'])) if values['host'] else '尚未配置 SMTP 服务，请先进入设置并发送测试邮件。')
+        self.mail_summary.set(('Windows 桌面通知：'+('开启' if values['desktop_enabled'] else '关闭')+'；邮件：'+('已启用 '+values['host'] if values['email_enabled'] else '关闭（无需配置邮箱）')))
         self.close_summary.set('同步后关闭小程序：'+('已开启，验证成功后延时 3 秒关闭' if values['wechat_close_after_token'] else '已关闭'))
-        self.hint.set('选择宿舍后点击查询，或前往邮件提醒开启持续监测。' if self.app.token.get().strip() else '首次使用：先在“登录与同步”中接入微信，再加载宿舍列表。')
+        self.hint.set('选择宿舍后可开始持续监测，最低每 30 分钟检查一次；邮箱为可选项。' if self.app.token.get().strip() else '首次使用：先在“登录与同步”中接入微信，再加载宿舍列表。')
         logs='\n\n'.join(ctl.logs) or '暂无运行记录。查询、同步与邮件提醒的结果会显示在这里。'
         if logs!=self.last_log:
             self.last_log=logs;self.log.configure(state='normal');self.log.delete('1.0','end');self.log.insert('end',logs);self.log.see('end');self.log.configure(state='disabled')
@@ -413,45 +413,51 @@ def hint(parent,value,pady=12):
 
 
 def build_mail_dialog(ctl):
-    win,footer,pages,book=dialog_shell(ctl.root,'邮件与提醒设置','固定时间与低余量提醒可同时启用，使用当前所选宿舍。',
-                                     ('邮件服务','提醒规则','启动与保存','运行记录'))
+    win,footer,pages,book=dialog_shell(ctl.root,'监测与提醒设置','独立持续监测，Windows 通知与邮件可分别开启。最低查询间隔为 30 分钟。',
+                                     ('通知方式','提醒规则','邮件服务','启动与保存','运行记录'))
     ctl.dialog=win;ctl.settings_widgets=[]
     win.protocol('WM_DELETE_WINDOW',ctl.close_dialog)
     ttk.Button(footer,text='保存设置',style='Primary.TButton',command=ctl.save_settings).pack(side='right')
-    ctl.test_button=ttk.Button(footer,text='发送测试邮件',command=ctl.test_email)
-    ctl.test_button.pack(side='right',padx=10)
-    ttk.Button(footer,text='开始提醒',command=ctl.start).pack(side='left')
-    ttk.Button(footer,text='停止提醒',style='Quiet.TButton',command=ctl.stop).pack(side='left',padx=8)
+    ttk.Button(footer,text='测试桌面通知',command=ctl.test_desktop).pack(side='right',padx=10)
+    ttk.Button(footer,text='开始监测',command=ctl.start).pack(side='left')
+    ttk.Button(footer,text='停止监测',style='Quiet.TButton',command=ctl.stop).pack(side='left',padx=8)
     b=pages[0]
+    section(b,'Windows 桌面通知','无需邮箱、账号或授权码。收到通知时会显示当前宿舍的电量和水量。')
+    for key,title in (('desktop_enabled','启用 Windows 桌面通知'),('desktop_each_query','每轮成功查询后通知水电余量'),('email_enabled','同时启用邮件提醒（可选，需配置 SMTP）')):
+        check=ttk.Checkbutton(b,text=title,variable=ctl.vars[key]);check.pack(anchor='w',pady=8);ctl.settings_widgets.append(check)
+    hint(b,'低阈值、固定时间通知使用“提醒规则”页的设置。\n达到低阈值时，同一条余量通知升级为警告，不重复弹两条。\n\nWindows 免打扰或关闭通知可能阻止横幅。\n“已提交”只代表系统接受通知请求；最小化程序可继续监测。\n关闭程序或休眠会停止运行。')
+    b=pages[2]
     section(b,'SMTP 邮件服务','填写邮箱服务商提供的 SMTP 地址和授权码，再发送测试邮件。')
     form=tk.Frame(b,bg=WHITE);form.pack(fill='x')
     for row,title,key in ((0,'SMTP 服务器','host'),(1,'端口','port'),(2,'连接加密','security'),(3,'登录账号','username'),(4,'密码 / 授权码','password'),(5,'发件人邮箱','sender'),(6,'收件人邮箱','recipients')):
         widget=field(form,row,title,ctl.password if key=='password' else ctl.vars[key],ctl,password=key=='password',choices=('SSL/TLS','STARTTLS') if key=='security' else None)
         if key=='security':widget.bind('<<ComboboxSelected>>',ctl.security_changed)
     hint(b,'发件人留空时使用登录账号；多个收件人用逗号分隔。\n常见端口：SSL/TLS 465，STARTTLS 587，以服务商说明为准。')
+    ctl.test_button=ttk.Button(b,text='发送测试邮件',command=ctl.test_email);ctl.test_button.pack(anchor='w',pady=14)
     b=pages[1]
     section(b,'提醒规则','规则按北京时间执行；水、电阈值分别判断。')
-    check=ttk.Checkbutton(b,text='每天固定时间发送余量邮件',variable=ctl.vars['daily_enabled']);check.pack(anchor='w');ctl.settings_widgets.append(check)
+    check=ttk.Checkbutton(b,text='每天固定时间发送余量通知',variable=ctl.vars['daily_enabled']);check.pack(anchor='w');ctl.settings_widgets.append(check)
     form=tk.Frame(b,bg=WHITE);form.pack(fill='x',pady=(0,16))
     field(form,0,'每天发送时间',ctl.vars['daily_times'],ctl)
     hint(b,'使用 HH:MM，多个时间用逗号分隔，如 08:00, 20:00。',0)
     tk.Frame(b,bg=LINE,height=1).pack(fill='x',pady=18)
-    check=ttk.Checkbutton(b,text='低余量时发送邮件',variable=ctl.vars['threshold_enabled']);check.pack(anchor='w');ctl.settings_widgets.append(check)
+    check=ttk.Checkbutton(b,text='低余量时发送警告',variable=ctl.vars['threshold_enabled']);check.pack(anchor='w');ctl.settings_widgets.append(check)
     form=tk.Frame(b,bg=WHITE);form.pack(fill='x')
-    for row,title,key in ((0,'电量 ≤（度）','electricity_limit'),(1,'水量 ≤（吨）','water_limit'),(2,'查询间隔（分钟）','interval_minutes'),(3,'持续不足重复提醒（小时）','repeat_hours')):
+    for row,title,key in ((0,'电量 ≤（度）','electricity_limit'),(1,'水量 ≤（吨）','water_limit'),(2,'查询间隔（分钟，最低 30）','interval_minutes'),(3,'持续不足重复提醒（小时）','repeat_hours')):
         field(form,row,title,ctl.vars[key],ctl)
     hint(b,'阈值留空表示不监测该项；首次低于阈值时提醒，持续不足按间隔重复。充值恢复后可重新触发。')
-    b=pages[2]
+    hint(b,'自动查询和失败后的重试至少间隔 30 分钟；固定时间在两轮查询之间到达时，使用上一次成功读数并标注查询时间。关闭这两项规则仍可持续监测。')
+    b=pages[3]
     section(b,'启动与保存','设置保存在当前软件目录，无需重新填写。')
     ttk.Checkbutton(b,text='保存 Token 和 SMTP 密码 / 授权码',variable=ctl.vars['remember_credentials'],command=ctl.remember_changed).pack(anchor='w',pady=6)
     ttk.Checkbutton(b,text='启动软件后自动开始提醒',variable=ctl.vars['auto_start']).pack(anchor='w',pady=6)
-    hint(b,'自动开始前会验证 Token 和 SMTP 登录；校验失败会暂停并显示原因。\n此选项不会设置 Windows 开机启动。')
+    hint(b,'自动开始前验证 Token；只有启用邮件时才检查 SMTP。未配置邮箱也可自动开始监测。\n此选项不会设置 Windows 开机启动。')
     tk.Frame(b,bg=LINE,height=1).pack(fill='x',pady=20)
     ttk.Checkbutton(b,text='接收小程序登录响应，自动同步 Token',variable=ctl.vars['token_sync_enabled'],command=ctl.sync_changed).pack(anchor='w')
     ttk.Button(b,text='打开微信同步设置',command=ctl.embedded.open).pack(anchor='w',pady=14)
     hint(b,'保存凭证后，.env 包含明文 Token 和 SMTP 授权码，请勿分享。\n程序关闭或电脑休眠时，无法执行查询和邮件发送。')
     ttk.Button(b,text='打开配置文件夹',style='Quiet.TButton',command=ctl.open_directory).pack(anchor='w',pady=14)
-    b=pages[3];section(b,'运行记录','最近的验证、查询与邮件处理结果。')
+    b=pages[4];section(b,'运行记录','最近的验证、查询与通知处理结果。')
     ctl.log_widget=tk.Text(b,height=22,wrap='word',font=(FONT,10),bg=WHITE,fg=MUTED,relief='flat')
     ctl.log_widget.pack(fill='both',expand=True)
     ctl.log_widget.insert('end','\n'.join(ctl.logs) or '暂无处理记录，可先发送测试邮件验证配置。')

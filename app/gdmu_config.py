@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sys
 
-VERSION = '1.5.0'
+VERSION = '1.6.0'
 FIELDS = {
     'host': 'SMTP_HOST', 'port': 'SMTP_PORT', 'security': 'SMTP_SECURITY',
     'username': 'SMTP_USERNAME', 'sender': 'SMTP_SENDER', 'recipients': 'SMTP_RECIPIENTS',
@@ -18,8 +18,10 @@ FIELDS = {
     'wechat_close_after_token': 'WECHAT_CLOSE_AFTER_TOKEN',
     'wechat_window_title': 'WECHAT_WINDOW_TITLE', 'wechat_window_class': 'WECHAT_WINDOW_CLASS',
     'wechat_window_process': 'WECHAT_WINDOW_PROCESS',
+    'email_enabled': 'EMAIL_ENABLED', 'desktop_enabled': 'DESKTOP_ENABLED',
+    'desktop_each_query': 'DESKTOP_EACH_QUERY',
 }
-BOOLS = {'daily_enabled', 'threshold_enabled', 'remember_credentials', 'auto_start', 'token_sync_enabled', 'proxy_auto_start', 'wechat_auto_wake', 'wechat_close_after_token'}
+BOOLS = {'daily_enabled', 'threshold_enabled', 'remember_credentials', 'auto_start', 'token_sync_enabled', 'proxy_auto_start', 'wechat_auto_wake', 'wechat_close_after_token', 'email_enabled', 'desktop_enabled', 'desktop_each_query'}
 
 
 def software_directory():
@@ -76,9 +78,19 @@ class ConfigStore:
                     options[field] = value in ('true', '1', 'yes')
                 else:
                     options[field] = raw[key]
+        if 'email_enabled' not in options:
+            options['email_enabled'] = bool(raw.get('SMTP_HOST','').strip() and raw.get('SMTP_USERNAME','').strip() and raw.get('SMTP_RECIPIENTS','').strip())
+        adjusted = False
+        try:
+            if int(options.get('interval_minutes','30')) < 30:
+                options['interval_minutes']='30'
+                adjusted=True
+        except ValueError:
+            pass
         remembered = options.get('remember_credentials', True)
         return {
             'options': options,
+            'interval_adjusted': adjusted,
             'token': raw.get('GDMU_TOKEN', '') if remembered else '',
             'password': raw.get('SMTP_PASSWORD', '') if remembered else '',
             'target': {
@@ -100,7 +112,7 @@ class ConfigStore:
         values['ROOM_ID'] = str(target.get('room', '9632'))
         values['DORM_NAME'] = str(target.get('name', ''))
         lines = [
-            '# 广东医宿舍水电查询 v1.5.0 环境配置文件',
+            '# 广东医宿舍水电查询 v1.6.0 环境配置文件',
             '# 本文件由软件读写，不会执行其中的内容。',
             '# 记住凭证后会包含 Token 和 SMTP 授权码，请勿分享此文件。',
             '# 字符串使用双引号；AUTO_START=true 表示启动软件后校验并自动提醒。',

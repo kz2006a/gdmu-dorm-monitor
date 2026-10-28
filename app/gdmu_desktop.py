@@ -34,11 +34,11 @@ class BalanceApp:
         self.updated = tk.StringVar(value='选择其他宿舍时，会清除上一次的余量。')
         self.building_id = tk.StringVar(value='1')
         self.room_id = tk.StringVar(value='1')
-        self.reminder_status = tk.StringVar(value='邮件提醒未启动。先配置 SMTP 服务与提醒规则。')
+        self.reminder_status = tk.StringVar(value='持续监测未启动。可直接使用 Windows 通知，邮箱为可选项。')
         self.reminders = None
         self.sync_status = tk.StringVar(value='未启用 Token 自动同步。')
         self.syncing_target = False
-        root.title('广东医 · 宿舍水电查询 v1.5.0')
+        root.title('广东医 · 宿舍水电查询 v1.6.0')
         width = max(760, min(1120, root.winfo_screenwidth() - 100))
         height = max(600, min(870, root.winfo_screenheight() - 100))
         root.geometry(f'{width}x{height}')

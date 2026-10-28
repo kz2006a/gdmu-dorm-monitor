@@ -45,6 +45,8 @@ def run(report_path):
             first = gui.BalanceApp(root, Backend(), config_dir=folder, auto_start=False)
             apps.append(first)
             ctl = first.reminders
+            ctl.vars['email_enabled'].set(True)
+            ctl.vars['desktop_enabled'].set(False)
             first.token.set('offline-token')
             ctl.password.set('offline-password')
             for key, value in {'host': 'smtp.example.com', 'username': 'sender@example.com',
@@ -119,6 +121,30 @@ def run(report_path):
             second.reminders.embedded.dialog = None
             second.close()
             report['checks'].append('SMTP/preferences and embedded HTTPS settings windows')
+        with tempfile.TemporaryDirectory(dir=Path(report_path).resolve().parent) as folder:
+            class FakeNotifier:
+                def __init__(self):self.calls=[]
+                def prepare(self):pass
+                def show(self,*args):self.calls.append(args);return True
+                def close(self):pass
+            before=len(checks)
+            root=tk.Tk();root.withdraw()
+            local=gui.BalanceApp(root,Backend(),config_dir=folder,auto_start=False);apps.append(local)
+            local.reminders.notifier=FakeNotifier()
+            local.token.set('offline-token');local.reminders.vars['auto_start'].set(True)
+            assert local.reminders.save_settings(silent=True)
+            local.reminders.start(automatic=True)
+            wait(local,lambda:local.reminders.active and local.reminders.notifier.calls)
+            assert local.reminders.monitor.smtp is None and len(checks)==before
+            assert local.reminders.monitor.next_poll>time.monotonic()+1750
+            local.close()
+            root=tk.Tk();root.withdraw()
+            restarted=gui.BalanceApp(root,Backend(),config_dir=folder,auto_start=True);apps.append(restarted)
+            restarted.reminders.notifier=FakeNotifier()
+            wait(restarted,lambda:restarted.reminders.active and restarted.reminders.notifier.calls)
+            assert len(checks)==before
+            restarted.close()
+            report['checks'].append('No SMTP credentials: starts, desktop delivery callback, minimum 30-minute poll, restart autostart without SMTP')
         if '--with-proxy-engine' in __import__('sys').argv:
             import shutil
             from gdmu_proxy import ProxyService, certificate_thumbprint
