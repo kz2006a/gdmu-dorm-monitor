@@ -62,6 +62,8 @@ def run(report_path):
             report['checks'].append('Restart exact ID restoration and optional email-free autostart; >=30 minute polling')
             app.room_box.current(0);app.choose_room()
             wait(app,lambda:app.reminders.active and str(app.reminders.monitor.room)=='100')
+            app.reminders.embedded.recovery_unavailable=lambda: ''
+            app.reminders.embedded.advance_recovery=lambda: None
             backend.good={'fresh-token'}
             app.reminders.monitor.next_poll=0
             wait(app,lambda:app.reminders.waiting_for_token)
@@ -70,6 +72,14 @@ def run(report_path):
             wait(app,lambda:app.reminders.active and app.reminders.monitor.token=='fresh-token')
             assert str(app.reminders.monitor.room)=='100'
             report['checks'].append('Live room switching and expired login response -> lists -> selected room -> monitor resume')
+            # Exercise the terminal recovery transition without real email/OS changes.
+            app.reminders.begin_recovery()
+            assert app.reminders.recovery is not None
+            app.reminders.fail_recovery('offline simulated timeout')
+            app.reminders.fail_recovery('duplicate offline timeout')
+            assert not app.reminders.desired_running and not app.reminders.active
+            assert app.reminders.recovery is None
+            report['checks'].append('Silent expiry recovery; terminal failure pauses once and cancels further monitoring')
             app.reminders.stop();app.reminders.open();assert app.ui.page=='mail'
             app.reminders.embedded.open();assert app.ui.page=='login'
             app.ui.show('overview');app.root.deiconify()

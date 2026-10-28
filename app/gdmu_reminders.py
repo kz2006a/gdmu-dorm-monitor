@@ -348,11 +348,13 @@ class Monitor:
             text = error_text(exc)
             self.notify('error', '余量查询失败：' + text)
             expired = isinstance(exc, ValueError) and '登录凭证已失效' in str(exc)
-            if expired or self.failures >= 3:
-                self.failure_notice(text, moment)
             if expired:
                 self.stop_event.set()
-                self.notify('stopped', 'Token 已失效，提醒已停止。请更新 Token 后重新启动。')
+                # The controller owns refresh, its deadline and the final notice.
+                # Expiry alone must never send an email before refresh is tried.
+                self.notify('token_expired', text)
+            elif self.failures >= 3:
+                self.failure_notice(text, moment)
             return
         if self.desktop_notify is not None and monotonic >= self.desktop_retry_after:
             from gdmu_notifications import balance_notice

@@ -77,6 +77,9 @@ class ReminderController:
         self.token_validation_busy = False
         self.token_sync_epoch = 0
         self.pending_token_resume = False
+        self.recovery = None
+        self.recovery_serial = 0
+        self.recovery_clock = time.monotonic
         self.token_inbox = TokenInbox(self.directory, self.sync_note)
         self.last_sync_error = ''
         self.auto_timer = None
@@ -107,7 +110,9 @@ class ReminderController:
         self.desired_running = True
         self.pending_token_resume = True
         if not self.app.token.get().strip():
-            self.login_expired()
+            self.app.flow_ready = False
+            self.app.status.set('等待微信登录后恢复宿舍。')
+            self.embedded.request_login()
 
     def values(self):
         return {key: variable.get() for key, variable in self.vars.items()}
@@ -441,6 +446,7 @@ class ReminderController:
                     info = self.backend.query_balance(token, building, room)
                 if cancel.is_set():
                     return
+                self.events.put((generation, 'token_recovered', None))
                 if config is not None:
                     try:
                         reminders.check_smtp_login(config)
@@ -464,6 +470,7 @@ class ReminderController:
         self.expired_intent = False
         if not self.desired_running:
             return
+        self.finish_recovery()
         desktop = None
         if self.vars['desktop_enabled'].get():
             try:
@@ -483,6 +490,8 @@ class ReminderController:
     def stop(self, reason='提醒已停止。'):
         was_active = self.active or self.preflight_busy or self.pending_retarget or self.startup_pending or self.waiting_for_token or self.expired_intent
         self.cancel_startup()
+        self.recovery = None
+        self.embedded.cancel_wake()
         self.desired_running = False
         self.waiting_for_token = False
         self.expired_intent = False
@@ -524,11 +533,96 @@ class ReminderController:
 
     def login_expired(self):
         """Allow login recovery even when the user only wants one-off queries."""
+        if self.desired_running:
+            self.begin_recovery()
+            return
         self.expired_intent = self.desired_running
         self.waiting_for_token = self.vars['token_sync_enabled'].get() and self.desired_running
         self.app.flow_ready = False
         self.app.status.set('登录已过期，正在等待微信重新登录。')
         self.embedded.request_login()
+
+    def begin_recovery(self):
+        """One bounded silent recovery transaction per running monitoring intent."""
+        if not self.desired_running:
+            return
+        if self.recovery is not None:
+            # A list-valid candidate may still fail the final balance query.
+            # Keep the same deadline/notice claim, and let login recovery continue.
+            self.waiting_for_token = True
+            self.pending_token_resume = False
+            self.app.flow_ready = False
+            return
+        self.recovery_serial += 1
+        try:
+            name = self.target()[2]
+        except ValueError:
+            name = self.app.result_room.get()
+        smtp = self.monitor.smtp if self.monitor is not None else None
+        if smtp is None and self.vars['email_enabled'].get():
+            try:
+                smtp = reminders.SMTPConfig.from_values(self.values(), self.password.get())
+            except ValueError:
+                pass
+        self.recovery = {'id': self.recovery_serial, 'deadline': self.recovery_clock()+300,
+                         'smtp': smtp, 'name': name}
+        if self.monitor is not None:
+            self.monitor.stop()
+        self.app.cancel_requests()
+        self.app.flow_ready = False
+        self.pending_token_resume = False
+        self.pending_retarget = False
+        self.waiting_for_token = True
+        self.expired_intent = True
+        self.embedded.cancel_wake()
+        self.embedded.expiry_seen = False
+        self.embedded.recovery_connect_attempted = False
+        self.app.reminder_status.set('登录已过期，正在自动更新，暂不发送异常邮件。')
+        self.log('Token 已过期，进入静默自动恢复（最长 5 分钟）。')
+        reason = self.embedded.recovery_unavailable()
+        if reason and not self.token_validation_busy:
+            self.fail_recovery(reason)
+
+    def finish_recovery(self, queried=True):
+        if self.recovery is not None:
+            self.log('自动更新成功，已查询宿舍余量；未发送 Token 过期邮件。' if queried else
+                     '登录已更新，原宿舍不可用，等待重新选择；未发送 Token 过期邮件。')
+            self.recovery = None
+
+    def fail_recovery(self, reason):
+        attempt = self.recovery
+        if attempt is None or not self.desired_running:
+            return
+        # Claim this attempt before stopping/spawning; repeated timeout/error
+        # events can no longer send a second failure notice.
+        self.recovery = None
+        self.embedded.window_closer.cancel()
+        self.stop('自动更新登录失败，监测已暂停。请重新连接微信后手动开始监测。')
+        self.app.flow_ready = False
+        self.app.status.set('自动更新失败，监测已暂停：' + reason)
+        self.log('静默恢复失败：' + reason)
+        moment = reminders.now_local()
+        body = (f'宿舍：{attempt["name"]}\n时间：{moment:%Y-%m-%d %H:%M:%S}（北京时间）\n'
+                f'Token 已过期，自动更新失败：{reason}\n'
+                '监测已暂停，本轮不会重复发送过期通知。请打开软件重新连接微信，再手动开始监测。')
+        if self.vars['desktop_enabled'].get():
+            try:
+                self.notifier.prepare()
+                self.notifier.show('宿舍水电 · 登录更新失败', body, True)
+            except (OSError, ValueError):
+                self.log('登录更新失败的桌面通知未能提交。')
+        if not self.vars['email_enabled'].get() or attempt['smtp'] is None:
+            self.log('未启用邮件或 SMTP 配置不可用；未发送登录失效邮件。')
+            return
+        def send_once():
+            try:
+                result = reminders.send_email(attempt['smtp'], f'宿舍水电 · Token 更新失败｜{attempt["name"]}', body)
+                text = ('Token 更新失败邮件已提交 SMTP，本轮只通知一次。' if result['accepted'] > 0
+                        else 'Token 更新失败邮件未被收件服务器接受；监测保持暂停，不自动重发。')
+            except Exception as exc:
+                text = 'Token 更新失败邮件发送未完成；监测保持暂停，不自动重发：' + reminders.error_text(exc)
+            self.events.put((None, 'recovery_notice', text))
+        threading.Thread(target=send_once, daemon=True).start()
 
     def poll(self):
         if self.app.closed:
@@ -536,6 +630,9 @@ class ReminderController:
         try:
             while True:
                 generation, kind, data = self.events.get_nowait()
+                if kind == 'recovery_notice':
+                    self.log(data)
+                    continue
                 if kind.startswith('test_'):
                     self.test_busy = False
                     if hasattr(self, 'test_button') and self.test_button.winfo_exists():
@@ -561,11 +658,22 @@ class ReminderController:
                     continue
                 if kind == 'validated':
                     self.activate(generation, data)
+                elif kind == 'token_expired':
+                    self.begin_recovery()
+                elif kind == 'token_recovered':
+                    self.finish_recovery()
                 elif kind == 'validation_error':
                     self.preflight_busy = False
                     self.pending_retarget = False
                     self.lock_settings(False)
                     text, automatic = data
+                    if '登录凭证已失效' in text:
+                        self.log('凭证已过期，尝试自动更新。')
+                        self.begin_recovery()
+                        continue
+                    if self.recovery is not None:
+                        self.fail_recovery('更新后的登录或宿舍验证未完成：' + text)
+                        continue
                     self.expired_intent = '登录凭证已失效' in text
                     self.waiting_for_token = self.vars['token_sync_enabled'].get() and self.expired_intent
                     self.desired_running = self.waiting_for_token
@@ -595,6 +703,8 @@ class ReminderController:
             pass
         self.pump_token_sync()
         self.embedded.poll()
+        if self.recovery is not None and self.recovery_clock() >= self.recovery['deadline']:
+            self.fail_recovery('自动更新超过 5 分钟，未能验证并恢复宿舍查询。')
         if self.pending_token_resume and self.desired_running and self.app.flow_ready and not self.app.busy and not self.preflight_busy and not self.token_validation_busy:
             self.pending_token_resume = False
             self.start(automatic=True)

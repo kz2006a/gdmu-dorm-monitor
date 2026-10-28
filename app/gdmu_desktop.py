@@ -30,7 +30,7 @@ class BalanceApp:
         self.syncing_target = self.restoring = self.flow_ready = False
         self.restore_target = {}
         self.token_timer = self.initial_timer = None
-        root.title('广东医 · 宿舍水电 v1.7.0')
+        root.title('广东医 · 宿舍水电 v1.7.1')
         root.geometry(f'{max(760,min(1080,root.winfo_screenwidth()-100))}x{max(600,min(820,root.winfo_screenheight()-100))}')
         root.minsize(760,600)
         root.protocol('WM_DELETE_WINDOW',self.close)
@@ -187,6 +187,7 @@ class BalanceApp:
         self.run('正在匹配旧版保存的宿舍…',search,done)
 
     def restoration_missing(self,reason):
+        self.reminders.finish_recovery(queried=False)
         self.restoring=False; self.flow_ready=False
         self.reset_result('请重新选择宿舍'); self.status.set(reason); self.ui.show('overview')
         if self.reminders.desired_running:
@@ -279,6 +280,7 @@ class BalanceApp:
             self.last_balance=(token,str(building),str(room),info,time.monotonic())
             self.display_balance(info,name)
             self.flow_ready=True
+            self.reminders.finish_recovery()
             saved=self.reminders.save_session()
             self.status.set('已更新 · 宿舍已保存在本地' if saved else '余量已更新，但本地保存失败，请检查配置目录。')
             self.reminders.resume_for_selection()

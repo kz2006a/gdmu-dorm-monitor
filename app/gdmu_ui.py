@@ -217,7 +217,7 @@ class DashboardUI:
         for key,label in (('overview','水电总览'),('login','微信连接'),('mail','监测设置'),('logs','运行记录')):
             button=ttk.Button(sidebar,text=label,style='Nav.TButton',command=lambda k=key:self.show(k))
             button.pack(fill='x',padx=8,pady=(16 if key=='overview' else 3,3)); self.nav[key]=button
-        text(sidebar,'v1.7.0',8,MUTED).pack(side='bottom',anchor='w',padx=24,pady=18)
+        text(sidebar,'v1.7.1',8,MUTED).pack(side='bottom',anchor='w',padx=24,pady=18)
         self.content=ScrollPage(shell); self.content.frame.pack(side='left',fill='both',expand=True)
         a.canvas=self.content.canvas
         for key,title in (('overview','水电总览'),('login','微信连接'),('mail','监测设置'),('logs','运行记录')):

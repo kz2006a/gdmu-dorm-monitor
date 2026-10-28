@@ -29,6 +29,7 @@ class EmbeddedSyncUI:
         self.last_route_check = 0
         self.login_requested = False
         self.login_automatic = False
+        self.recovery_connect_attempted = False
         self.window_closer = CloseAfterToken(controller.values, self.note)
         self.start_timer = self.root.after(800, self.startup)
 
@@ -51,6 +52,33 @@ class EmbeddedSyncUI:
                 self.login_requested = False  # poll owns the two-attempt recovery cycle
             else:
                 self.open_login_window(automatic=True)
+
+    def recovery_unavailable(self):
+        if not self.ctl.vars['token_sync_enabled'].get():
+            return '未开启 Token 同步，无法自动获取新登录。'
+        if not self.ctl.vars['wechat_auto_wake'].get():
+            return '未开启登录过期时自动打开小程序。'
+        raw = self.ctl.vars['wechat_shortcut'].get().strip()
+        path = Path(raw)
+        if not raw or path.suffix.lower() not in ('.lnk', '.url') or not path.is_file():
+            return '小程序快捷方式缺失或不可用。'
+        if not self.service.connected and not self.busy and not self.ctl.vars['proxy_auto_start'].get():
+            return '同步未连接，且未允许自动连接微信。'
+        return ''
+
+    def advance_recovery(self):
+        if self.ctl.recovery is None or self.service.connected or self.busy:
+            return
+        if self.start_timer is not None or self.recovery_connect_attempted:
+            return
+        self.recovery_connect_attempted = True
+        if not self.ctl.vars['proxy_auto_start'].get():
+            self.ctl.fail_recovery('同步接入未完成，无法自动更新。')
+        elif not certificate_trusted(self.ctl.directory):
+            self.ctl.fail_recovery('本目录证书未受信任，不能自动连接。')
+        else:
+            # Uses the saved opt-in; never installs certificates automatically.
+            self.prepare(connect_after=True)
 
     def open_login_window(self, automatic=False):
         self.login_requested = False
@@ -300,6 +328,7 @@ class EmbeddedSyncUI:
             if kind == 'error':
                 self.login_requested = False
                 self.note(value)
+                self.ctl.fail_recovery('同步引擎操作失败：' + value)
             elif action == '准备登录':
                 if certificate_trusted(self.ctl.directory):
                     self.connect()
@@ -312,6 +341,7 @@ class EmbeddedSyncUI:
                     self.enable_route()
                 except (ValueError, OSError) as exc:
                     self.note(str(exc))
+                    self.ctl.fail_recovery('同步接入失败：' + str(exc))
             else:
                 self.note(value or '内置引擎已就绪。首次使用请安装证书，然后开启同步。')
         if self.service.connected and not self.service.alive:
@@ -331,6 +361,7 @@ class EmbeddedSyncUI:
                     self.note('系统代理已被其他程序更改；内置同步暂停接入，未覆盖外部设置。')
             except (ValueError, OSError) as exc:
                 self.note(str(exc))
+        self.advance_recovery()
         waiting = self.ctl.waiting_for_token and self.ctl.desired_running
         if not waiting:
             self.expiry_seen = False
@@ -341,8 +372,12 @@ class EmbeddedSyncUI:
             self.wake_deadline = time.monotonic()
         if waiting and self.wake_deadline and time.monotonic() >= self.wake_deadline:
             if self.wake_count >= 2:
-                self.cancel_wake()
-                self.note('两次唤起后仍未收到可用 Token，请手动进入小程序查询或完成学校登录。')
+                if self.ctl.recovery is not None and (self.ctl.token_validation_busy or self.ctl.app.busy or self.ctl.preflight_busy):
+                    self.wake_deadline = time.monotonic() + 1
+                else:
+                    self.cancel_wake()
+                    self.note('两次唤起后仍未收到可用 Token，请手动进入小程序查询或完成学校登录。')
+                    self.ctl.fail_recovery('两次自动唤起后，仍未收到并验证可用 Token。')
             else:
                 try:
                     self.wake()
@@ -352,6 +387,7 @@ class EmbeddedSyncUI:
                 except (OSError, ValueError) as exc:
                     self.cancel_wake()
                     self.note(str(exc))
+                    self.ctl.fail_recovery('小程序自动打开失败：' + str(exc))
 
     def open(self):
         if self.dialog is not None and self.dialog.winfo_exists():
