@@ -1,0 +1,32 @@
+# Local credentials and runtime data
+.env
+.env.*
+!.env.example
+**/data/
+**/token-sync/
+**/cert-backups/
+**/reminder-history.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.pcap
+*.pcapng
+*.saz
+*.wxapkg
+# Generated artifacts
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.exe
+*.dll
+*.zip
+# Approval / upload material lives outside the tracked repository
+release-assets/
+逐版确认/
+历史源码快照/
+tests/.tmp/

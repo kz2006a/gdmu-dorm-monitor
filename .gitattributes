@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.py text eol=lf
+*.pyw text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+third_party/licenses/** -whitespace
