@@ -38,7 +38,7 @@ class BalanceApp:
         self.reminders = None
         self.sync_status = tk.StringVar(value='未启用 Token 自动同步。')
         self.syncing_target = False
-        root.title('广东医 · 宿舍水电查询 v1.4.0')
+        root.title('广东医 · 宿舍水电查询 v1.4.1')
         height = max(600, min(860, root.winfo_screenheight() - 100))
         root.geometry(f'820x{height}')
         root.minsize(720, 600)

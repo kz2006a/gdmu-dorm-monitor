@@ -74,12 +74,39 @@ def run(report_path):
             second.reminders.monitor.next_poll = 0
             wait(second, lambda: second.reminders.waiting_for_token)
             inbox = Path(folder) / 'token-sync'
+            from gdmu_wechat_window import CloseAfterToken, Window, WindowsDesktop
+            from ctypes import wintypes as wt
+            desktop = WindowsDesktop()
+            desktop.user.GetAncestor.argtypes = [wt.HWND, wt.UINT]
+            desktop.user.GetAncestor.restype = wt.HWND
+            own_handle = desktop.user.GetAncestor(second.root.winfo_id(), 2)
+            assert desktop.get(own_handle).pid == os.getpid()
+            class TestDesktop:
+                def __init__(self):
+                    self.target = Window(100, 20, 12345, r'C:\ControlledTest\WeChatAppEx.exe', 'test-window', '广东医缴费')
+                    self.closed = False
+                def windows(self): return [self.target] if self.target else []
+                def get(self, hwnd): return self.target
+                def close(self, target):
+                    self.closed = True
+                    self.target = None
+                    return True
+            window_clock = [10]
+            test_desktop = TestDesktop()
+            closer = CloseAfterToken(second.reminders.values, second.reminders.embedded.note, test_desktop, lambda: window_clock[0])
+            second.reminders.embedded.window_closer = closer
+            closer.armed()
             ticks = int((time.time() + 62135596800) * 10000000)
             captured = inbox / f'{ticks}-{os.urandom(16).hex()}.login.json'
             captured.write_text(json.dumps({'ret_code': '00', 'info': api.encrypt_json({'token': 'new-offline-token'})}), encoding='utf-8')
             wait(second, lambda: second.reminders.active and second.reminders.monitor.token == 'new-offline-token')
             assert config.ConfigStore(folder).load()['token'] == 'new-offline-token'
             assert not list(inbox.glob('*.login.json'))
+            assert closer.close_at == 13 and not test_desktop.closed
+            window_clock[0] = 13
+            closer.poll()
+            assert test_desktop.closed
+            report['checks'].append('Bundled Win32 window identity inspection; verified Token schedules only tracked test window close after 3 seconds')
             report['checks'].append('Expired token -> encrypted login response -> validated replacement -> automatic resume')
             second.reminders.open(); second.reminders.dialog.withdraw()
             second.root.update_idletasks()

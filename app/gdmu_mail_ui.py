@@ -21,6 +21,8 @@ DEFAULTS = {
     'remember_credentials': True, 'auto_start': False,
     'token_sync_enabled': False,
     'proxy_auto_start': False, 'wechat_auto_wake': False, 'wechat_shortcut': '',
+    'wechat_close_after_token': True, 'wechat_window_title': '',
+    'wechat_window_class': '', 'wechat_window_process': '',
 }
 
 
@@ -191,7 +193,7 @@ class ReminderController:
 
     def begin_token_update(self, candidate):
         original = self.app.token.get().strip()
-        if candidate == original and self.active:
+        if candidate == original and self.active and not self.embedded.window_closer.armed_until:
             self.sync_note('响应中的 Token 已在当前监测中使用，无需替换。')
             return
         try:

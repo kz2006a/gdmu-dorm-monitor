@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sys
 
-VERSION = '1.4.0'
+VERSION = '1.4.1'
 FIELDS = {
     'host': 'SMTP_HOST', 'port': 'SMTP_PORT', 'security': 'SMTP_SECURITY',
     'username': 'SMTP_USERNAME', 'sender': 'SMTP_SENDER', 'recipients': 'SMTP_RECIPIENTS',
@@ -15,8 +15,11 @@ FIELDS = {
     'token_sync_enabled': 'TOKEN_SYNC_ENABLED',
     'proxy_auto_start': 'PROXY_AUTO_START', 'wechat_auto_wake': 'WECHAT_AUTO_WAKE',
     'wechat_shortcut': 'WECHAT_SHORTCUT',
+    'wechat_close_after_token': 'WECHAT_CLOSE_AFTER_TOKEN',
+    'wechat_window_title': 'WECHAT_WINDOW_TITLE', 'wechat_window_class': 'WECHAT_WINDOW_CLASS',
+    'wechat_window_process': 'WECHAT_WINDOW_PROCESS',
 }
-BOOLS = {'daily_enabled', 'threshold_enabled', 'remember_credentials', 'auto_start', 'token_sync_enabled', 'proxy_auto_start', 'wechat_auto_wake'}
+BOOLS = {'daily_enabled', 'threshold_enabled', 'remember_credentials', 'auto_start', 'token_sync_enabled', 'proxy_auto_start', 'wechat_auto_wake', 'wechat_close_after_token'}
 
 
 def software_directory():
@@ -97,7 +100,7 @@ class ConfigStore:
         values['ROOM_ID'] = str(target.get('room', '9632'))
         values['DORM_NAME'] = str(target.get('name', ''))
         lines = [
-            '# 广东医宿舍水电查询 v1.4.0 环境配置文件',
+            '# 广东医宿舍水电查询 v1.4.1 环境配置文件',
             '# 本文件由软件读写，不会执行其中的内容。',
             '# 记住凭证后会包含 Token 和 SMTP 授权码，请勿分享此文件。',
             '# 字符串使用双引号；AUTO_START=true 表示启动软件后校验并自动提醒。',

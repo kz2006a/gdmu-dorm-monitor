@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from gdmu_proxy import ProxyService, certificate_action, certificate_trusted, certificate_thumbprint
+from gdmu_wechat_window import CloseAfterToken, eligible
 
 
 class EmbeddedSyncUI:
@@ -26,6 +27,7 @@ class EmbeddedSyncUI:
         self.wake_deadline = 0
         self.expiry_seen = False
         self.last_route_check = 0
+        self.window_closer = CloseAfterToken(controller.values, self.note)
         self.start_timer = self.root.after(800, self.startup)
 
     def startup(self):
@@ -100,6 +102,7 @@ class EmbeddedSyncUI:
         try:
             result = self.service.disconnect()
             self.cancel_wake()
+            self.window_closer.cancel()
             self.ctl.vars['proxy_auto_start'].set(False)
             self.ctl.save_settings(silent=True, validate_auto=False)
             self.note('代理已被外部修改，未覆盖外部设置；请检查 Windows 代理。' if result == 'changed-externally' else '已关闭接入并恢复原代理。')
@@ -146,7 +149,16 @@ class EmbeddedSyncUI:
         path = Path(raw)
         if not raw or path.suffix.lower() not in ('.lnk', '.url') or not path.is_file():
             raise ValueError('请先选择微信为广东医缴费创建的 .lnk 或 .url 快捷方式。若当前微信不支持创建，请手动打开小程序。')
-        os.startfile(str(path.resolve()))
+        try:
+            self.window_closer.armed()
+        except OSError:
+            self.window_closer.cancel()
+            self.note('无法识别小程序窗口，本轮只唤起，不自动关闭。')
+        try:
+            os.startfile(str(path.resolve()))
+        except OSError:
+            self.window_closer.cancel()
+            raise
 
     def test_wake(self):
         try:
@@ -169,10 +181,72 @@ class EmbeddedSyncUI:
     def validated(self):
         self.cancel_wake()
         self.expiry_seen = False
+        try:
+            self.window_closer.validated()
+        except OSError:
+            self.window_closer.cancel()
+            self.note('Token 已接入，但读取目标窗口失败，请手动关闭小程序。')
+
+    def close_option_changed(self):
+        self.window_closer.cancel()
+        self.ctl.save_settings(silent=True, validate_auto=False)
+
+    def automatic_window(self):
+        for key in ('wechat_window_title', 'wechat_window_class', 'wechat_window_process'):
+            self.ctl.vars[key].set('')
+        self.close_option_changed()
+        self.note('恢复自动识别：仅匹配唯一的“广东医缴费”窗口。')
+
+    def choose_window(self):
+        win = tk.Toplevel(self.root)
+        win.title('选择广东医缴费的小程序窗口')
+        win.geometry('780x360')
+        ttk.Label(win, text='先打开广东医缴费，再刷新列表并选择它的窗口。微信主窗口和登录窗口不会列出。', wraplength=740).pack(anchor='w', padx=16, pady=12)
+        tree = ttk.Treeview(win, columns=('title', 'process', 'class'), show='headings', height=7)
+        for key, title, width in (('title', '窗口标题', 300), ('process', '进程', 170), ('class', '窗口类', 230)):
+            tree.heading(key, text=title)
+            tree.column(key, width=width)
+        tree.pack(fill='both', expand=True, padx=16)
+        snapshots = {}
+        def refresh():
+            tree.delete(*tree.get_children())
+            snapshots.clear()
+            try:
+                for item in self.window_closer.desktop.windows():
+                    key = str(item.hwnd)
+                    snapshots[key] = item
+                    tree.insert('', 'end', iid=key, values=(item.title, item.process_name, item.class_name))
+            except OSError as exc:
+                messagebox.showerror('读取失败', str(exc), parent=win)
+        def select():
+            choice = tree.selection()
+            if not choice:
+                return
+            old = snapshots[choice[0]]
+            current = self.window_closer.desktop.get(old.hwnd)
+            if current is None or current.identity != old.identity or current.title != old.title or not eligible(current):
+                messagebox.showinfo('窗口已变化', '请刷新列表后重新选择。', parent=win)
+                return
+            self.ctl.vars['wechat_window_title'].set(current.title)
+            self.ctl.vars['wechat_window_class'].set(current.class_name)
+            self.ctl.vars['wechat_window_process'].set(current.process_name)
+            self.close_option_changed()
+            self.note('已绑定小程序窗口：' + current.title + '。下次唤起并验证 Token 后自动关闭。')
+            win.destroy()
+        actions = ttk.Frame(win, padding=12)
+        actions.pack(fill='x')
+        ttk.Button(actions, text='刷新窗口列表', command=refresh).pack(side='left')
+        ttk.Button(actions, text='绑定所选窗口', command=select).pack(side='right')
+        refresh()
 
     def poll(self):
         if self.closing.is_set():
             return
+        try:
+            self.window_closer.poll()
+        except OSError:
+            self.window_closer.cancel()
+            self.note('自动关闭小程序失败，请手动关闭；Token 与监测不受影响。')
         while True:
             try:
                 kind, action, value = self.events.get_nowait()
@@ -272,6 +346,14 @@ class EmbeddedSyncUI:
         ttk.Entry(row, textvariable=self.ctl.vars['wechat_shortcut']).pack(side='left', fill='x', expand=True)
         ttk.Button(row, text='选择快捷方式', command=self.choose_shortcut).pack(side='left', padx=8)
         ttk.Button(row, text='测试唤起', command=self.test_wake).pack(side='left')
+        ttk.Checkbutton(body, text='本软件唤起后，Token 验证成功 3 秒后自动关闭小程序窗口',
+                        variable=self.ctl.vars['wechat_close_after_token'], command=self.close_option_changed).pack(anchor='w', pady=(10, 5))
+        row = ttk.Frame(body)
+        row.pack(fill='x', pady=5)
+        ttk.Button(row, text='选择小程序窗口', command=self.choose_window).pack(side='left')
+        ttk.Button(row, text='恢复自动识别', command=self.automatic_window).pack(side='left', padx=8)
+        ttk.Label(body, text='默认识别标题中包含“广东医缴费”的唯一窗口；识别不到时，请先打开小程序，再选择窗口绑定。'
+                  '只向本轮目标窗口发送关闭请求，不结束微信进程。无效 Token 不会触发关闭。', wraplength=670).pack(anchor='w', pady=5)
         ttk.Label(body, text='仅选择微信创建的目标小程序快捷方式。是否支持创建取决于微信版本；'
                   '打开后若未自动重新登录，仍需在小程序进入水电查询页。当前版本不自动识别或点击小程序页面。', wraplength=670).pack(anchor='w', pady=8)
         ttk.Label(body, text='运行时仅解密 pay.gdmu.edu.cn；只保存目标登录接口的临时响应，读取后删除。'
@@ -281,6 +363,7 @@ class EmbeddedSyncUI:
 
     def close(self):
         self.closing.set()
+        self.window_closer.cancel()
         if self.start_timer is not None:
             self.root.after_cancel(self.start_timer)
         self.cancel_wake()
