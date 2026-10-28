@@ -306,60 +306,8 @@ class EmbeddedSyncUI:
             self.dialog.deiconify()
             self.dialog.lift()
             return
-        win = tk.Toplevel(self.root)
-        self.dialog = win
-        win.title('内置 HTTPS 同步 · 无需 Fiddler')
-        win.geometry(f'760x{max(600, min(780, self.root.winfo_screenheight()-100))}')
-        win.minsize(700, 600)
-        footer = ttk.Frame(win, padding=(20, 10))
-        footer.pack(side='bottom', fill='x')
-        ttk.Button(footer, text='保存上述设置', command=self.save).pack(side='right')
-        pane = ttk.Frame(win)
-        pane.pack(fill='both', expand=True)
-        canvas = tk.Canvas(pane, highlightthickness=0, background='#f3f6fb')
-        scroll = ttk.Scrollbar(pane, orient='vertical', command=canvas.yview)
-        scroll.pack(side='right', fill='y')
-        canvas.pack(side='left', fill='both', expand=True)
-        canvas.configure(yscrollcommand=scroll.set)
-        body = ttk.Frame(canvas, padding=20)
-        item = canvas.create_window((0, 0), window=body, anchor='nw')
-        body.bind('<Configure>', lambda event: canvas.configure(scrollregion=canvas.bbox('all')))
-        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(item, width=event.width))
-        win.bind('<MouseWheel>', lambda event: canvas.yview_scroll(-1 if event.delta > 0 else 1, 'units') if event.delta else None)
-        ttk.Label(body, text='首次：准备引擎 → 安装证书 → 开启同步', font=('Microsoft YaHei UI', 14, 'bold')).pack(anchor='w')
-        ttk.Label(body, text='引擎随软件附带，无需另装 Python、Fiddler 或 mitmproxy。', wraplength=680).pack(anchor='w', pady=8)
-        row = ttk.Frame(body)
-        row.pack(fill='x', pady=8)
-        for title, command in [('准备内置引擎', self.prepare), ('安装 HTTPS 证书', self.install_certificate), ('开启同步', self.connect)]:
-            ttk.Button(row, text=title, command=command).pack(side='left', padx=(0, 8))
-        row = ttk.Frame(body)
-        row.pack(fill='x', pady=8)
-        for title, command in [('关闭接入', self.disconnect), ('恢复网络', self.recover), ('移除本软件证书', lambda: self.install_certificate(False))]:
-            ttk.Button(row, text=title, command=command).pack(side='left', padx=(0, 8))
-        ttk.Label(body, textvariable=self.status, wraplength=670, foreground='#2167e8').pack(anchor='w', pady=10)
-        ttk.Separator(body).pack(fill='x', pady=10)
-        ttk.Checkbutton(body, text='启动软件后自动开启内置同步（会接入当前用户系统代理）', variable=self.ctl.vars['proxy_auto_start']).pack(anchor='w', pady=5)
-        ttk.Label(body, text='只有安装证书并勾选保存后才自动接入。检测到其他系统代理时暂停接入。', wraplength=670).pack(anchor='w')
-        ttk.Checkbutton(body, text='Token 失效时通过快捷方式唤起广东医缴费', variable=self.ctl.vars['wechat_auto_wake']).pack(anchor='w', pady=(18, 5))
-        row = ttk.Frame(body)
-        row.pack(fill='x', pady=5)
-        ttk.Entry(row, textvariable=self.ctl.vars['wechat_shortcut']).pack(side='left', fill='x', expand=True)
-        ttk.Button(row, text='选择快捷方式', command=self.choose_shortcut).pack(side='left', padx=8)
-        ttk.Button(row, text='测试唤起', command=self.test_wake).pack(side='left')
-        ttk.Checkbutton(body, text='本软件唤起后，Token 验证成功 3 秒后自动关闭小程序窗口',
-                        variable=self.ctl.vars['wechat_close_after_token'], command=self.close_option_changed).pack(anchor='w', pady=(10, 5))
-        row = ttk.Frame(body)
-        row.pack(fill='x', pady=5)
-        ttk.Button(row, text='选择小程序窗口', command=self.choose_window).pack(side='left')
-        ttk.Button(row, text='恢复自动识别', command=self.automatic_window).pack(side='left', padx=8)
-        ttk.Label(body, text='默认识别标题中包含“广东医缴费”的唯一窗口；识别不到时，请先打开小程序，再选择窗口绑定。'
-                  '只向本轮目标窗口发送关闭请求，不结束微信进程。无效 Token 不会触发关闭。', wraplength=670).pack(anchor='w', pady=5)
-        ttk.Label(body, text='仅选择微信创建的目标小程序快捷方式。是否支持创建取决于微信版本；'
-                  '打开后若未自动重新登录，仍需在小程序进入水电查询页。当前版本不自动识别或点击小程序页面。', wraplength=670).pack(anchor='w', pady=8)
-        ttk.Label(body, text='运行时仅解密 pay.gdmu.edu.cn；只保存目标登录接口的临时响应，读取后删除。'
-                  '其他域名经本地代理透传。不要分享 .env、data 或 token-sync。\n\n'
-                  '首次接入后若没有新登录响应，可关闭小程序窗口后重新打开。微信可能需要重新建立代理连接。'
-                  '本机真实微信兼容性需要首次运行验证；证书校验不会被关闭。', wraplength=670, foreground='#526581').pack(anchor='w', pady=10)
+        from gdmu_ui import build_proxy_dialog
+        build_proxy_dialog(self)
 
     def close(self):
         self.closing.set()

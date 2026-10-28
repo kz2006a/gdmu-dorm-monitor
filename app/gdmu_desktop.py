@@ -38,21 +38,14 @@ class BalanceApp:
         self.reminders = None
         self.sync_status = tk.StringVar(value='未启用 Token 自动同步。')
         self.syncing_target = False
-        root.title('广东医 · 宿舍水电查询 v1.4.1')
-        height = max(600, min(860, root.winfo_screenheight() - 100))
-        root.geometry(f'820x{height}')
-        root.minsize(720, 600)
-        root.configure(bg='#f3f6fb')
+        root.title('广东医 · 宿舍水电查询 v1.5.0')
+        width = max(760, min(1120, root.winfo_screenwidth() - 100))
+        height = max(600, min(870, root.winfo_screenheight() - 100))
+        root.geometry(f'{width}x{height}')
+        root.minsize(760, 600)
         root.protocol('WM_DELETE_WINDOW', self.close)
-        style = ttk.Style(root)
-        style.theme_use('clam')
-        style.configure('.', font=('Microsoft YaHei UI', 10), background='#f3f6fb')
-        style.configure('TEntry', padding=7)
-        style.configure('TCombobox', padding=7)
-        style.configure('TButton', padding=(13, 8))
-        style.configure('Primary.TButton', background='#2167e8', foreground='white', borderwidth=0)
-        style.map('Primary.TButton', background=[('active', '#1857c9'), ('disabled', '#9fb5db')])
-        style.configure('TCheckbutton', background='#f3f6fb')
+        from gdmu_ui import theme
+        theme(root)
         self.build_ui()
         from gdmu_mail_ui import ReminderController
         self.reminders = ReminderController(self, backend, config_dir=config_dir, auto_start=auto_start)
@@ -74,111 +67,8 @@ class BalanceApp:
         return item
 
     def build_ui(self):
-        header = tk.Frame(self.root, bg='#152b4b', padx=28, pady=20)
-        header.pack(fill='x')
-        self.label(header, '宿舍水电查询', fg='white', font=('Microsoft YaHei UI', 23, 'bold')).pack(anchor='w')
-        self.label(header, '切换校区、楼栋和房间，查询对应宿舍的水电余量。', fg='#c4d3e9').pack(anchor='w', pady=(6, 0))
-        footer = tk.Frame(self.root, bg='#e8eef7', padx=28, pady=10)
-        footer.pack(fill='x', side='bottom')
-        self.label(footer, '', textvariable=self.status, fg='#526581', anchor='w', wraplength=660).pack(fill='x')
-        container = tk.Frame(self.root, bg='#f3f6fb')
-        container.pack(fill='both', expand=True)
-        self.canvas = tk.Canvas(container, bg='#f3f6fb', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient='vertical', command=self.canvas.yview)
-        scrollbar.pack(side='right', fill='y')
-        self.canvas.pack(side='left', fill='both', expand=True)
-        self.canvas.configure(yscrollcommand=scrollbar.set)
-        body = tk.Frame(self.canvas, bg='#f3f6fb', padx=28, pady=18)
-        window = self.canvas.create_window((0, 0), window=body, anchor='nw')
-        body.bind('<Configure>', lambda event: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
-        self.canvas.bind('<Configure>', lambda event: self.canvas.itemconfigure(window, width=event.width))
-        self.root.bind('<MouseWheel>', self.scroll)
-        self.label(body, '登录凭证', font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w')
-        token_row = tk.Frame(body, bg='#f3f6fb')
-        token_row.pack(fill='x', pady=(8, 3))
-        self.token_entry = ttk.Entry(token_row, textvariable=self.token, show='●')
-        self.token_entry.pack(side='left', fill='x', expand=True)
-        self.editable.append(self.token_entry)
-        self.button(token_row, '清空', self.clear_token).pack(side='left', padx=(8, 0))
-        self.button(token_row, '保存配置', lambda: self.reminders.save_settings()).pack(side='left', padx=(8, 0))
-        self.show_token = tk.BooleanVar(value=False)
-        self.token_check = ttk.Checkbutton(token_row, text='显示', variable=self.show_token,
-                                          command=lambda: self.token_entry.configure(show='' if self.show_token.get() else '●'))
-        self.token_check.pack(side='left', padx=(8, 0))
-        self.token_entry.bind('<KeyRelease>', self.token_changed)
-        self.token_entry.bind('<<Paste>>', lambda event: self.root.after_idle(self.token_changed))
-        self.label(body, 'Token 可保存到软件目录 .env，重启自动读取；保存选项位于 SMTP 与提醒设置。', fg='#728096', font=('Microsoft YaHei UI', 9)).pack(anchor='w')
-        sync = tk.Frame(body, bg='#f3f6fb')
-        sync.pack(fill='x', pady=(10, 0))
-        self.sync_check = ttk.Checkbutton(sync, text='接收新 Token', command=lambda: self.reminders.sync_changed())
-        self.sync_check.pack(side='left')
-        ttk.Button(sync, text='内置同步设置', command=lambda: self.reminders.embedded.open()).pack(side='left', padx=8)
-        ttk.Button(sync, text='接入说明', command=lambda: self.reminders.show_sync_help()).pack(side='left')
-        self.label(body, '', textvariable=self.sync_status, fg='#526581', font=('Microsoft YaHei UI', 9), wraplength=650, justify='left').pack(anchor='w', pady=(5, 0))
-
-        select_header = tk.Frame(body, bg='#f3f6fb')
-        select_header.pack(fill='x', pady=(18, 7))
-        self.label(select_header, '选择宿舍', font=('Microsoft YaHei UI', 11, 'bold')).pack(side='left')
-        self.button(select_header, '加载宿舍列表', self.load_campuses).pack(side='right')
-        selects = tk.Frame(body, bg='#f3f6fb')
-        selects.pack(fill='x')
-        self.combos = []
-        for col, title in enumerate(('校区', '楼栋', '房间')):
-            selects.columnconfigure(col, weight=1, uniform='select')
-            block = tk.Frame(selects, bg='#f3f6fb')
-            block.grid(row=0, column=col, sticky='ew', padx=(0 if col == 0 else 8, 0))
-            self.label(block, title, fg='#728096').pack(anchor='w', pady=(0, 5))
-            combo = ttk.Combobox(block, state='disabled', width=18)
-            combo.pack(fill='x')
-            self.combos.append(combo)
-        self.campus_box, self.building_box, self.room_box = self.combos
-        self.campus_box.bind('<<ComboboxSelected>>', self.choose_campus)
-        self.building_box.bind('<<ComboboxSelected>>', self.choose_building)
-        self.room_box.bind('<<ComboboxSelected>>', self.choose_room)
-        self.button(body, '查询所选宿舍', self.query_selected, primary=True).pack(anchor='e', pady=(12, 14))
-
-        card = tk.Frame(body, bg='white', padx=20, pady=16, highlightbackground='#e0e7f1', highlightthickness=1)
-        card.pack(fill='x')
-        self.label(card, '', textvariable=self.result_room, font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w')
-        meters = tk.Frame(card, bg='white')
-        meters.pack(fill='x', pady=(14, 9))
-        for col, (title, value, unit, color) in enumerate((
-            ('剩余电量', self.electricity, '度', '#2167e8'),
-            ('剩余水量', self.water, '吨', '#078a9b'),
-        )):
-            meters.columnconfigure(col, weight=1, uniform='meters')
-            section = tk.Frame(meters, bg='white')
-            section.grid(row=0, column=col, sticky='w')
-            self.label(section, title, fg='#728096').pack(anchor='w')
-            line = tk.Frame(section, bg='white')
-            line.pack(anchor='w')
-            self.label(line, '', textvariable=value, fg=color, font=('Microsoft YaHei UI', 30, 'bold')).pack(side='left')
-            self.label(line, unit, fg='#728096').pack(side='left', padx=(8, 0), pady=(14, 0))
-        self.label(card, '', textvariable=self.updated, fg='#728096', font=('Microsoft YaHei UI', 9)).pack(anchor='w')
-
-        remind = tk.Frame(body, bg='#f3f6fb')
-        remind.pack(fill='x', pady=(15, 0))
-        self.label(remind, '邮件提醒', font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w')
-        controls = tk.Frame(remind, bg='#f3f6fb')
-        controls.pack(fill='x', pady=(8, 6))
-        ttk.Button(controls, text='SMTP 与提醒设置', command=lambda: self.reminders.open()).pack(side='left')
-        ttk.Button(controls, text='开始邮件提醒', style='Primary.TButton', command=lambda: self.reminders.start()).pack(side='left', padx=8)
-        ttk.Button(controls, text='停止提醒', command=lambda: self.reminders.stop()).pack(side='left')
-        self.label(remind, '', textvariable=self.reminder_status, fg='#526581', wraplength=660, justify='left').pack(anchor='w')
-        self.label(remind, '每天固定时间 / 低于余量阈值；需保持程序运行，电脑不休眠。', fg='#728096', font=('Microsoft YaHei UI', 9)).pack(anchor='w', pady=(4, 0))
-
-        manual = tk.Frame(body, bg='#f3f6fb')
-        manual.pack(fill='x', pady=(16, 0))
-        self.label(manual, '也可直接按内部编号查询', fg='#728096', font=('Microsoft YaHei UI', 9)).pack(anchor='w')
-        row = tk.Frame(manual, bg='#f3f6fb')
-        row.pack(fill='x', pady=(7, 0))
-        for title, variable in (('楼栋 ID', self.building_id), ('房间 ID', self.room_id)):
-            self.label(row, title, font=('Microsoft YaHei UI', 9)).pack(side='left', padx=(0, 5))
-            entry = ttk.Entry(row, textvariable=variable, width=10)
-            entry.pack(side='left', padx=(0, 15))
-            self.editable.append(entry)
-        self.button(row, '按编号查询', self.query_manual).pack(side='right')
-        self.label(body, '电余量每半小时更新；水余量每天 14:00 更新（以小程序说明为准）。', fg='#728096', font=('Microsoft YaHei UI', 9)).pack(anchor='w', pady=(14, 0))
+        from gdmu_ui import DashboardUI
+        self.ui = DashboardUI(self)
 
     def scroll(self, event):
         if not isinstance(event.widget, ttk.Combobox) and event.delta:
@@ -224,6 +114,7 @@ class BalanceApp:
         if self.busy:
             return
         if not self.token.get().strip():
+            self.ui.show('login')
             messagebox.showinfo('请填写 Token', '请先粘贴自己查询请求中的 token 值。', parent=self.root)
             self.token_entry.focus_set()
             return
@@ -256,6 +147,7 @@ class BalanceApp:
                     messagebox.showerror('查询未完成', text, parent=self.root)
         except queue.Empty:
             pass
+        self.ui.refresh()
         if not self.closed:
             self.poll_timer = self.root.after(100, self.poll)
 
