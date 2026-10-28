@@ -1,0 +1,9 @@
+{
+  "name": "mitmproxy / mitmdump",
+  "version": "12.3.0",
+  "license": "MIT",
+  "source": "https://github.com/mitmproxy/mitmproxy/tree/v12.3.0",
+  "download": "https://downloads.mitmproxy.org/12.3.0/mitmproxy-12.3.0-windows-x86_64.zip",
+  "download_sha256": "5427f3520e6280a7390cfe7e6fade25c7768bbfea04d33678223c55817713050",
+  "mitmdump_sha256": "f2729c66e011b780a158cb93bc7ca84fdeb8fa48c076c8798064f1315c296294"
+}
