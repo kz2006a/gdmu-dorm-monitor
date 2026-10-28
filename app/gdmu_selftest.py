@@ -1,5 +1,6 @@
 """Offline release smoke test, run only with an explicit launcher argument."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -25,8 +26,11 @@ def run(report_path):
         assert api.decrypt_json(api.SAMPLE_INFO)['electricityBalance'] == '100'
         report['checks'].append('External app modules, bundled crypto and adjacent config path')
         class Backend:
+            def __init__(self):
+                self.tokens = {'offline-token'}
             def query_balance(self, token, building, room):
-                assert token == 'offline-token'
+                if token not in self.tokens:
+                    raise ValueError('登录凭证已失效，请更新。')
                 return {'electricityBalance': '133' if int(room) == 9632 else '88', 'waterBalance': '13.01'}
         def wait(app, condition):
             end = time.monotonic() + 8
@@ -64,6 +68,19 @@ def run(report_path):
             second.room_box.current(1); second.choose_room()
             wait(second, lambda: second.reminders.active and second.reminders.monitor.room == 9633 and second.electricity.get() == '88')
             report['checks'].append('Live dorm target switching without restarting the window')
+            second.reminders.vars['token_sync_enabled'].set(True)
+            second.reminders.sync_changed()
+            second.reminders.backend.tokens = {'new-offline-token'}
+            second.reminders.monitor.next_poll = 0
+            wait(second, lambda: second.reminders.waiting_for_token)
+            inbox = Path(folder) / 'token-sync'
+            ticks = int((time.time() + 62135596800) * 10000000)
+            captured = inbox / f'{ticks}-{os.urandom(16).hex()}.login.json'
+            captured.write_text(json.dumps({'ret_code': '00', 'info': api.encrypt_json({'token': 'new-offline-token'})}), encoding='utf-8')
+            wait(second, lambda: second.reminders.active and second.reminders.monitor.token == 'new-offline-token')
+            assert config.ConfigStore(folder).load()['token'] == 'new-offline-token'
+            assert not list(inbox.glob('*.login.json'))
+            report['checks'].append('Expired token -> encrypted login response -> validated replacement -> automatic resume')
             second.reminders.open(); second.reminders.dialog.withdraw()
             second.root.update_idletasks()
             second.reminders.close_dialog()

@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox
 
 import gdmu_reminders as reminders
 from gdmu_config import ConfigStore
+from gdmu_token_sync import TokenInbox, fingerprint, fiddler_script, guard_candidate
 
 DEFAULTS = {
     'host': '', 'port': '465', 'security': 'SSL/TLS', 'username': '',
@@ -17,6 +18,7 @@ DEFAULTS = {
     'electricity_limit': '20', 'water_limit': '1',
     'interval_minutes': '30', 'repeat_hours': '24',
     'remember_credentials': True, 'auto_start': False,
+    'token_sync_enabled': False,
 }
 
 
@@ -60,6 +62,13 @@ class ReminderController:
         self.pending_retarget = False
         self.preflight_busy = False
         self.validation_cancel = threading.Event()
+        self.waiting_for_token = False
+        self.expired_intent = False
+        self.token_validation_busy = False
+        self.token_sync_epoch = 0
+        self.pending_token_resume = False
+        self.token_inbox = TokenInbox(self.directory, self.sync_note)
+        self.last_sync_error = ''
         self.auto_timer = None
         self.poll_timer = self.root.after(250, self.poll)
         if self.config_error:
@@ -67,6 +76,7 @@ class ReminderController:
             self.log(self.config_error + ' 请修正 .env 或在窗口中重新保存配置。')
         elif auto_start and self.vars['auto_start'].get():
             self.auto_timer = self.root.after(500, self.startup)
+        self.app.sync_status.set('等待 Fiddler 登录响应；需先生成并安装同步片段。' if self.vars['token_sync_enabled'].get() else '未启用自动同步。新 Token 由微信小程序登录后产生。')
 
     @property
     def active(self):
@@ -117,6 +127,112 @@ class ReminderController:
         if not silent:
             self.log('设置已保存到软件目录的 .env。' + ('已保存 Token 和 SMTP 授权码。' if values['remember_credentials'] else '未保存凭证，并已清除文件中的旧凭证。'))
         return True
+
+    def sync_note(self, text):
+        self.app.sync_status.set(text)
+        self.log('Token 同步：' + text)
+
+    def sync_changed(self):
+        self.token_sync_epoch += 1
+        self.token_validation_busy = False
+        if self.vars['token_sync_enabled'].get():
+            if self.expired_intent:
+                self.waiting_for_token = True
+                self.desired_running = True
+            self.sync_note('已启用本地监听，请确认 Fiddler 已安装同步片段。')
+        else:
+            self.token_inbox.close()
+            if self.waiting_for_token:
+                self.stop('已关闭 Token 同步，提醒保持暂停。')
+            self.sync_note('已关闭同步，不再接收登录响应。')
+        self.save_settings(silent=True, validate_auto=False)
+
+    def generate_sync_script(self):
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            path = self.directory / 'Fiddler_同步片段.txt'
+            path.write_text(fiddler_script(self.directory), encoding='utf-8-sig')
+            self.vars['token_sync_enabled'].set(True)
+            self.sync_changed()
+            self.token_inbox.pulse()
+            os.startfile(str(path))
+            messagebox.showinfo('接入片段已生成', '在 Fiddler Classic 中打开 Rules → Customize Rules，找到 OnBeforeResponse 函数。\n\n将刚生成的片段粘贴到该函数的大括号内，保留原有代码，保存后在小程序查询一次。\n\n移动软件文件夹后，请重新生成并更新片段路径。', parent=self.dialog or self.root)
+        except OSError:
+            messagebox.showerror('生成失败', '请检查软件目录是否可写；也可查看软件目录中的 Fiddler 接入说明。', parent=self.dialog or self.root)
+
+    def show_sync_help(self):
+        try:
+            os.startfile(str(self.directory / 'Fiddler接入说明.md'))
+        except OSError:
+            messagebox.showinfo('Token 同步', '生成片段后，将其放入 Fiddler 的 OnBeforeResponse 函数内。保持软件和 Fiddler 运行，再在微信小程序查询，以捕获新的 code2Session 响应。', parent=self.root)
+
+    def pump_token_sync(self):
+        if not self.vars['token_sync_enabled'].get():
+            return
+        try:
+            self.token_inbox.pulse()
+            self.token_inbox.collect()
+            self.last_sync_error = ''
+            if self.token_validation_busy or self.preflight_busy or self.app.busy or self.pending_retarget:
+                return
+            candidate = self.token_inbox.take()
+            if candidate is not None:
+                self.begin_token_update(candidate)
+        except OSError:
+            if not self.last_sync_error:
+                self.sync_note('同步目录不可读写，请检查软件目录权限。')
+            self.last_sync_error = 'io'
+
+    def begin_token_update(self, candidate):
+        original = self.app.token.get().strip()
+        if candidate == original and self.active:
+            self.sync_note('响应中的 Token 已在当前监测中使用，无需替换。')
+            return
+        try:
+            guard_candidate(original, candidate)
+            building, room, name = self.target()
+        except ValueError as exc:
+            self.sync_note(str(exc))
+            return
+        self.token_validation_busy = True
+        epoch = self.token_sync_epoch
+        self.sync_note('正在验证候选 Token（指纹 ' + fingerprint(candidate) + '）。')
+        def validate():
+            try:
+                self.backend.query_balance(candidate, building, room)
+                self.events.put((epoch, 'sync_valid', (original, candidate)))
+            except Exception as exc:
+                self.events.put((epoch, 'sync_error', reminders.error_text(exc)))
+        threading.Thread(target=validate, daemon=True).start()
+
+    def apply_synced_token(self, original, candidate):
+        if not self.vars['token_sync_enabled'].get():
+            return
+        if self.app.token.get().strip() != original:
+            self.sync_note('校验期间 Token 已手动更改，已忽略较早的候选结果。')
+            return
+        want_resume = self.active or self.desired_running or self.waiting_for_token
+        self.cancel_startup()
+        self.validation_cancel.set()
+        self.generation += 1
+        if self.monitor is not None:
+            self.monitor.stop()
+        self.preflight_busy = False
+        self.pending_retarget = False
+        self.waiting_for_token = False
+        self.expired_intent = False
+        self.desired_running = want_resume
+        self.app.token.set(candidate)
+        self.app.last_token_value = candidate
+        saved = self.save_settings(silent=True, validate_auto=False)
+        text = '新 Token 已通过余量查询验证并接入（指纹 ' + fingerprint(candidate) + '）。'
+        if not saved:
+            text += ' 配置未能保存，当前仅在内存中使用。'
+        self.sync_note(text)
+        self.lock_settings(False)
+        self.pending_token_resume = want_resume
+        if not want_resume:
+            self.app.reminder_status.set('Token 已更新；提醒仍保持手动停止状态。')
 
     def log(self, text):
         self.logs.append(f'{reminders.now_local():%H:%M:%S}  {text}')
@@ -194,6 +310,9 @@ class ReminderController:
                         variable=self.vars['auto_start']).pack(anchor='w', pady=(8, 0))
         ttk.Label(prefs, text='保存设置、开始提醒或退出软件时写入配置；校验失败会暂停并显示原因。\n此选项用于启动本软件后的自动提醒，不会设置 Windows 开机启动。', foreground='#728096', wraplength=610).pack(anchor='w', pady=(8, 0))
         ttk.Button(prefs, text='打开配置所在文件夹', command=self.open_directory).pack(anchor='w', pady=(8, 0))
+        ttk.Checkbutton(prefs, text='启用 Fiddler 登录响应 Token 自动同步',
+                        variable=self.vars['token_sync_enabled'], command=self.sync_changed).pack(anchor='w', pady=(10, 0))
+        ttk.Label(prefs, text='需一次性安装生成的 Fiddler 片段。只接收 code2Session 响应中的 Token；不会自行触发微信登录。', foreground='#728096', wraplength=610).pack(anchor='w', pady=(4, 0))
 
         rules = ttk.LabelFrame(body, text='提醒规则', padding=14)
         rules.pack(fill='x', pady=(14, 0))
@@ -286,6 +405,10 @@ class ReminderController:
 
     def start(self, automatic=False):
         self.cancel_startup()
+        if self.token_validation_busy:
+            self.desired_running = True
+            self.app.reminder_status.set('正在校验候选 Token，完成后继续启动提醒。')
+            return
         if self.active:
             self.log('提醒已在运行。如需修改设置，请先停止。')
             return
@@ -311,6 +434,7 @@ class ReminderController:
             self.app.reminder_status.set('配置保存失败，提醒未启动。请把程序放到可写文件夹。')
             return
         self.desired_running = True
+        self.waiting_for_token = False
         self.pending_retarget = False
         self.preflight_busy = True
         self.generation += 1
@@ -345,6 +469,8 @@ class ReminderController:
     def activate(self, generation, payload):
         token, building, room, name, config, rules, info = payload
         self.preflight_busy = False
+        self.waiting_for_token = False
+        self.expired_intent = False
         if not self.desired_running:
             return
         self.monitor = reminders.Monitor(self.backend, token, building, room, name, config, rules,
@@ -356,9 +482,12 @@ class ReminderController:
         self.monitor.start()
 
     def stop(self, reason='提醒已停止。'):
-        was_active = self.active or self.preflight_busy or self.pending_retarget or self.startup_pending
+        was_active = self.active or self.preflight_busy or self.pending_retarget or self.startup_pending or self.waiting_for_token or self.expired_intent
         self.cancel_startup()
         self.desired_running = False
+        self.waiting_for_token = False
+        self.expired_intent = False
+        self.pending_token_resume = False
         self.pending_retarget = False
         self.preflight_busy = False
         self.validation_cancel.set()
@@ -411,19 +540,30 @@ class ReminderController:
                         self.log(text)
                         messagebox.showinfo('测试邮件结果', text, parent=self.dialog or self.root)
                     continue
+                if kind in ('sync_valid', 'sync_error'):
+                    if generation != self.token_sync_epoch:
+                        continue
+                    self.token_validation_busy = False
+                    if kind == 'sync_valid':
+                        self.apply_synced_token(*data)
+                    else:
+                        self.sync_note('候选 Token 验证失败，保留原凭证：' + data)
+                    continue
                 if generation != self.generation:
                     continue
                 if kind == 'validated':
                     self.activate(generation, data)
                 elif kind == 'validation_error':
                     self.preflight_busy = False
-                    self.desired_running = False
                     self.pending_retarget = False
                     self.lock_settings(False)
                     text, automatic = data
+                    self.expired_intent = '登录凭证已失效' in text
+                    self.waiting_for_token = self.vars['token_sync_enabled'].get() and self.expired_intent
+                    self.desired_running = self.waiting_for_token
                     self.log('凭证校验失败：' + text)
-                    self.app.reminder_status.set('提醒已暂停：' + text)
-                    if not automatic:
+                    self.app.reminder_status.set('Token 失效，等待小程序重新登录后自动续上提醒。' if self.waiting_for_token else '提醒已暂停：' + text)
+                    if not automatic and not self.waiting_for_token:
                         messagebox.showerror('凭证校验未通过', text, parent=self.dialog or self.root)
                 elif kind == 'balance':
                     info = data['info']
@@ -436,11 +576,19 @@ class ReminderController:
                     self.log(data)
                     self.app.reminder_status.set(data)
                     if kind == 'stopped':
-                        self.desired_running = False
+                        self.expired_intent = self.desired_running and 'Token 已失效' in data
+                        self.waiting_for_token = self.vars['token_sync_enabled'].get() and self.expired_intent
+                        self.desired_running = self.waiting_for_token
                         self.pending_retarget = False
                         self.lock_settings(False)
+                        if self.waiting_for_token:
+                            self.app.reminder_status.set('Token 失效，等待微信小程序重新登录；新 Token 到达后自动继续。')
         except queue.Empty:
             pass
+        self.pump_token_sync()
+        if self.pending_token_resume and self.desired_running and not self.app.busy and not self.preflight_busy and not self.token_validation_busy:
+            self.pending_token_resume = False
+            self.start(automatic=True)
         if not self.app.closed:
             self.poll_timer = self.root.after(250, self.poll)
 
@@ -453,6 +601,8 @@ class ReminderController:
     def close(self):
         self.root.after_cancel(self.poll_timer)
         self.cancel_startup()
+        self.token_sync_epoch += 1
+        self.token_inbox.close()
         if not self.config_error:
             self.save_settings(silent=True, validate_auto=False)
         self.stop()
