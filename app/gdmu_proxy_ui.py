@@ -28,6 +28,7 @@ class EmbeddedSyncUI:
         self.expiry_seen = False
         self.last_route_check = 0
         self.login_requested = False
+        self.manual_feedback = False
         self.login_automatic = False
         self.recovery_connect_attempted = False
         self.window_closer = CloseAfterToken(controller.values, self.note)
@@ -36,7 +37,10 @@ class EmbeddedSyncUI:
     def begin_login(self):
         """Prepare automatically, retaining explicit consent for OS changes."""
         if self.busy:
+            self.ctl.app.feedback('连接操作正在进行，请稍候。','info')
             return
+        self.manual_feedback = True
+        self.ctl.app.ui.clear_feedback()
         self.login_requested = True
         self.login_automatic = False
         if self.service.connected:
@@ -87,6 +91,9 @@ class EmbeddedSyncUI:
             return
         if not self.ctl.vars['wechat_shortcut'].get().strip():
             self.note('同步已连接，请在微信打开广东医缴费完成登录。')
+            if self.manual_feedback:
+                self.manual_feedback=False
+                self.ctl.app.feedback('同步已连接；未选择快捷方式，请手动打开广东医缴费。','info')
             return
         self.test_wake()
 
@@ -116,6 +123,8 @@ class EmbeddedSyncUI:
             return
         self.busy = True
         self.note('正在' + action + '，请稍候。')
+        if self.manual_feedback:
+            self.ctl.app.feedback('正在'+action+'，请稍候。','busy',0)
         def run():
             try:
                 value = job()
@@ -147,6 +156,9 @@ class EmbeddedSyncUI:
             '关闭同步或退出时恢复原代理。请先关闭 Fiddler 或其他系统代理。', parent=self.dialog or self.root):
             self.login_requested = False
             self.note('已取消连接。')
+            if self.manual_feedback:
+                self.manual_feedback=False
+                self.ctl.app.feedback('已取消连接。','info')
             return
         self.prepare(connect_after=True)
 
@@ -156,6 +168,8 @@ class EmbeddedSyncUI:
         self.ctl.sync_changed()
         self.ctl.token_inbox.pulse()
         self.note('同步已连接，等待微信登录。')
+        if self.manual_feedback:
+            self.ctl.app.feedback('微信同步已连接，等待小程序返回真实登录响应。','info')
         if self.login_requested:
             if self.login_automatic and self.ctl.waiting_for_token:
                 self.login_requested = False
@@ -167,26 +181,35 @@ class EmbeddedSyncUI:
     def disconnect(self):
         if self.busy:
             self.note('当前操作尚未完成；完成后可关闭接入。')
+            self.ctl.app.feedback('当前连接操作尚未完成，请稍后再断开。','info')
             return
         try:
             result = self.service.disconnect()
             self.cancel_wake()
             self.window_closer.cancel()
             self.ctl.vars['proxy_auto_start'].set(False)
-            self.ctl.save_settings(silent=True, validate_auto=False)
-            self.note('代理已被外部修改，未覆盖外部设置；请检查 Windows 代理。' if result == 'changed-externally' else '已关闭接入并恢复原代理。')
+            saved=self.ctl.save_settings(silent=True, validate_auto=False)
+            text=('代理已被外部修改，保留其设置；请检查 Windows 代理。' if result == 'changed-externally' else '已关闭同步接入并恢复原代理。')
+            if not saved: text+=' 下次运行选项未能保存，请检查配置。'
+            self.note(text)
+            self.ctl.app.feedback(text,'warning' if result=='changed-externally' or not saved else 'success')
         except (ValueError, OSError) as exc:
             self.note(str(exc))
+            self.ctl.app.feedback('断开未完成：'+str(exc),'error')
 
     def recover(self):
         if self.busy:
+            self.ctl.app.feedback('当前连接操作尚未完成，请稍后再恢复网络。','info')
             return
         try:
             result = self.service.recover()
             self.service.connected = False
-            self.note('代理已被其他程序修改，保留其设置；如无法上网，请打开 Windows 设置检查。' if result == 'changed-externally' else '恢复检查完成，未遗留本软件的代理接入。')
+            text=('代理已被其他程序修改，保留其设置；如无法上网，请打开 Windows 设置检查。' if result == 'changed-externally' else '恢复检查完成，未遗留本软件的代理接入。')
+            self.note(text)
+            self.ctl.app.feedback(text,'warning' if result=='changed-externally' else 'success')
         except (ValueError, OSError) as exc:
             self.note(str(exc))
+            self.ctl.app.feedback('网络恢复未完成：'+str(exc),'error')
 
     def install_certificate(self, install=True):
         if self.busy:
@@ -204,17 +227,20 @@ class EmbeddedSyncUI:
                 '证书和私钥在 data/https-proxy，请勿分享该目录。\n\n'
                 if install else '将移除由此程序目录安装的用户根证书。\n\n') + '证书指纹：\n' + thumb
         if messagebox.askokcancel('安装 HTTPS 证书' if install else '移除 HTTPS 证书', text, parent=self.dialog or self.root):
+            if not self.login_requested: self.manual_feedback=True
             self.worker('安装证书' if install else '移除证书', lambda: certificate_action(self.ctl.directory, install))
-        elif self.login_requested:
+        else:
             self.login_requested = False
             self.note('已取消连接。')
+            self.manual_feedback=False
+            self.ctl.app.feedback('已取消证书操作。','info')
 
     def choose_shortcut(self):
         path = filedialog.askopenfilename(parent=self.dialog or self.root,
             title='选择微信为广东医缴费创建的桌面快捷方式', filetypes=[('快捷方式', '*.lnk *.url')])
         if path:
             self.ctl.vars['wechat_shortcut'].set(path)
-            self.save()
+            self.save('小程序快捷方式已保存，可用于自动打开。')
 
     def wake(self):
         raw = self.ctl.vars['wechat_shortcut'].get().strip()
@@ -236,15 +262,27 @@ class EmbeddedSyncUI:
         try:
             self.wake()
             self.note('已打开所选快捷方式。只有收到并验证登录 Token 后，才会显示刷新成功。')
+            if self.manual_feedback:
+                self.manual_feedback=False
+                self.ctl.app.feedback('已请求打开小程序，等待并验证真实登录响应。','info')
         except (OSError, ValueError) as exc:
             self.note(str(exc))
+            if self.manual_feedback:
+                self.manual_feedback=False
+                self.ctl.app.feedback('小程序未打开：'+str(exc),'error')
 
-    def save(self):
-        if self.ctl.vars['proxy_auto_start'].get() and not certificate_trusted(self.ctl.directory):
+    def save(self, success_message='连接设置已保存到本地。'):
+        adjusted=self.ctl.vars['proxy_auto_start'].get() and not certificate_trusted(self.ctl.directory)
+        if adjusted:
             messagebox.showinfo('证书未就绪', '先准备并安装证书，再保存启动后自动接入。', parent=self.dialog or self.root)
             self.ctl.vars['proxy_auto_start'].set(False)
         if self.ctl.save_settings(silent=True, validate_auto=False):
-            self.note('内置同步设置已保存。')
+            text=success_message if not adjusted else '连接设置已保存；证书未就绪，自动连接仍未开启。'
+            self.note(text); self.ctl.app.feedback(text,'warning' if adjusted else 'success')
+            return True
+        text='连接设置未保存，请检查监测设置及配置目录权限。'
+        self.note(text); self.ctl.app.feedback(text,'error')
+        return False
 
     def cancel_wake(self):
         self.wake_deadline = 0
@@ -259,15 +297,19 @@ class EmbeddedSyncUI:
             self.window_closer.cancel()
             self.note('Token 已接入，但读取目标窗口失败，请手动关闭小程序。')
 
-    def close_option_changed(self):
+    def close_option_changed(self, feedback=True):
         self.window_closer.cancel()
-        self.ctl.save_settings(silent=True, validate_auto=False)
+        saved=self.ctl.save_settings(silent=True, validate_auto=False)
+        if feedback or not saved:
+            self.ctl.app.feedback('关闭小程序选项已保存。' if saved else '窗口设置未保存，请检查监测设置及目录权限。','success' if saved else 'error')
+        return saved
 
     def automatic_window(self):
         for key in ('wechat_window_title', 'wechat_window_class', 'wechat_window_process'):
             self.ctl.vars[key].set('')
-        self.close_option_changed()
-        self.note('恢复自动识别：仅匹配唯一的“广东医缴费”窗口。')
+        if self.close_option_changed(feedback=False):
+            text='已保存自动识别设置：仅匹配唯一的“广东医缴费”窗口。'
+            self.note(text); self.ctl.app.feedback(text)
 
     def choose_window(self):
         win = tk.Toplevel(self.root)
@@ -302,8 +344,9 @@ class EmbeddedSyncUI:
             self.ctl.vars['wechat_window_title'].set(current.title)
             self.ctl.vars['wechat_window_class'].set(current.class_name)
             self.ctl.vars['wechat_window_process'].set(current.process_name)
-            self.close_option_changed()
+            if not self.close_option_changed(feedback=False): return
             self.note('已绑定小程序窗口：' + current.title + '。下次唤起并验证 Token 后自动关闭。')
+            self.ctl.app.feedback('小程序窗口已绑定并保存。')
             win.destroy()
         actions = ttk.Frame(win, padding=12)
         actions.pack(fill='x')
@@ -328,6 +371,9 @@ class EmbeddedSyncUI:
             if kind == 'error':
                 self.login_requested = False
                 self.note(value)
+                if self.manual_feedback:
+                    self.manual_feedback=False
+                    self.ctl.app.feedback(action+'未完成：'+value,'error')
                 self.ctl.fail_recovery('同步引擎操作失败：' + value)
             elif action == '准备登录':
                 if certificate_trusted(self.ctl.directory):
@@ -341,9 +387,15 @@ class EmbeddedSyncUI:
                     self.enable_route()
                 except (ValueError, OSError) as exc:
                     self.note(str(exc))
+                    if self.manual_feedback:
+                        self.manual_feedback=False
+                        self.ctl.app.feedback('微信同步未连接：'+str(exc),'error')
                     self.ctl.fail_recovery('同步接入失败：' + str(exc))
             else:
                 self.note(value or '内置引擎已就绪。首次使用请安装证书，然后开启同步。')
+                if self.manual_feedback:
+                    self.manual_feedback=False
+                    self.ctl.app.feedback(value or '内置引擎已准备完成。')
         if self.service.connected and not self.service.alive:
             try:
                 result = self.service.shutdown()

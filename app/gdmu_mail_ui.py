@@ -71,6 +71,7 @@ class ReminderController:
         self.desired_running = False
         self.pending_retarget = False
         self.preflight_busy = False
+        self.manual_start_feedback = False
         self.validation_cancel = threading.Event()
         self.waiting_for_token = False
         self.expired_intent = False
@@ -142,11 +143,13 @@ class ReminderController:
         except (OSError, ValueError) as exc:
             text = str(exc) if isinstance(exc, ValueError) else '无法写入软件目录的 .env，请把整个程序文件夹放到可写位置。'
             if not silent:
+                self.app.feedback('设置未保存：'+text,'error')
                 messagebox.showerror('保存失败', text, parent=self.dialog or self.root)
             self.log('配置保存失败：' + text)
             return False
         if not silent:
             self.app.status.set('设置已保存')
+            self.app.feedback('监测设置已保存到本地。')
             self.log('设置已保存到软件目录的 .env。' + ('已保存 Token 和 SMTP 授权码。' if values['remember_credentials'] else '未保存凭证，并已清除文件中的旧凭证。'))
         return True
 
@@ -314,6 +317,7 @@ class ReminderController:
     def open_directory(self):
         try:
             os.startfile(str(self.directory))
+            self.app.feedback('已请求打开软件文件夹。','info')
         except OSError:
             messagebox.showerror('无法打开', '请手动打开 EXE 所在的程序文件夹。', parent=self.dialog or self.root)
 
@@ -339,6 +343,7 @@ class ReminderController:
         if hasattr(self, 'test_button') and self.test_button.winfo_exists():
             self.test_button.configure(state='disabled')
         self.log('正在发送测试邮件…')
+        self.app.feedback('正在向 SMTP 服务器提交测试邮件…','busy',0)
         def worker():
             try:
                 result = reminders.send_email(config, '广东医宿舍水电｜SMTP 测试邮件',
@@ -355,8 +360,10 @@ class ReminderController:
                 '桌面通知测试已提交。\n正式监测通知会显示所选宿舍的剩余电量、水量及低阈值警告。'):
                 raise ValueError('Windows 未接受桌面通知。')
             self.log('测试通知已提交 Windows；若未弹出，请检查系统通知与免打扰设置。')
+            self.app.feedback('测试通知已提交 Windows；若未显示，请检查系统通知和免打扰设置。','info')
         except (OSError,ValueError) as exc:
             self.log('桌面通知测试失败：'+str(exc))
+            self.app.feedback('测试通知未提交：'+str(exc),'error')
             messagebox.showerror('桌面通知失败',str(exc),parent=self.dialog or self.root)
 
     def target(self):
@@ -374,6 +381,9 @@ class ReminderController:
         return building, room, name or f'楼栋 ID {building} / 房间 ID {room}'
 
     def start(self, automatic=False):
+        if not automatic:
+            self.manual_start_feedback=True
+            self.app.feedback('正在准备监测，请等待登录与宿舍校验…','busy',0)
         self.cancel_startup()
         if self.token_validation_busy:
             self.desired_running = True
@@ -381,6 +391,9 @@ class ReminderController:
             return
         if self.active:
             self.log('提醒已在运行。如需修改设置，请先停止。')
+            if not automatic:
+                self.manual_start_feedback=False
+                self.app.feedback('监测已在运行，无需重复开始。','info')
             return
         if self.preflight_busy:
             self.log('正在校验凭证，请稍候。')
@@ -411,10 +424,15 @@ class ReminderController:
             self.app.reminder_status.set(('自动启动未完成：' if automatic else '提醒未启动：') + str(exc))
             self.log(str(exc))
             if not automatic:
+                self.manual_start_feedback=False
+                self.app.feedback('监测未开始：'+str(exc),'error')
                 messagebox.showinfo('请检查提醒配置', str(exc), parent=self.dialog or self.root)
             return
         if not self.save_settings(silent=True, validate_auto=False):
             self.app.reminder_status.set('配置保存失败，提醒未启动。请把程序放到可写文件夹。')
+            if self.manual_start_feedback:
+                self.manual_start_feedback=False
+                self.app.feedback('配置保存失败，监测未开始，请检查目录权限。','error')
             return
         self.desired_running = True
         self.waiting_for_token = False
@@ -486,8 +504,14 @@ class ReminderController:
         self.app.reminder_status.set(f'提醒运行中：{name}；每 {rules.interval_minutes} 分钟检查。')
         self.log(f'凭证校验成功，已开始监测：{name}。固定时间使用北京时间。')
         self.monitor.start()
+        if self.manual_start_feedback:
+            self.manual_start_feedback=False
+            self.app.feedback(f'监测已开始，每 {rules.interval_minutes} 分钟检查水电余量。')
 
     def stop(self, reason='提醒已停止。'):
+        if self.manual_start_feedback:
+            self.app.ui.clear_feedback()
+        self.manual_start_feedback=False
         was_active = self.active or self.preflight_busy or self.pending_retarget or self.startup_pending or self.waiting_for_token or self.expired_intent
         self.cancel_startup()
         self.recovery = None
@@ -639,11 +663,11 @@ class ReminderController:
                         self.test_button.configure(state='normal')
                     if kind == 'test_error':
                         self.log('测试邮件失败：' + data)
-                        messagebox.showerror('测试邮件失败', data, parent=self.dialog or self.root)
+                        self.app.feedback('测试邮件未提交：'+data,'error')
                     else:
                         text = f'测试邮件已提交 SMTP 服务器，接受 {data["accepted"]} 个、拒绝 {data["refused"]} 个收件人。请检查收件箱或垃圾邮件。'
                         self.log(text)
-                        messagebox.showinfo('测试邮件结果', text, parent=self.dialog or self.root)
+                        self.app.feedback(text,'success' if data['accepted'] and not data['refused'] else 'warning' if data['accepted'] else 'error')
                     continue
                 if kind in ('sync_valid', 'sync_error'):
                     if generation != self.token_sync_epoch:
@@ -678,6 +702,9 @@ class ReminderController:
                     self.waiting_for_token = self.vars['token_sync_enabled'].get() and self.expired_intent
                     self.desired_running = self.waiting_for_token
                     self.log('凭证校验失败：' + text)
+                    if self.manual_start_feedback:
+                        self.manual_start_feedback=False
+                        self.app.feedback('监测未开始：'+text,'error')
                     self.app.reminder_status.set('Token 失效，等待小程序重新登录后自动续上提醒。' if self.waiting_for_token else '提醒已暂停：' + text)
                     if not automatic and not self.waiting_for_token:
                         messagebox.showerror('凭证校验未通过', text, parent=self.dialog or self.root)

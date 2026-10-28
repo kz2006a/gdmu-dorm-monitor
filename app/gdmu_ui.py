@@ -1,4 +1,4 @@
-"""Campus blue/white desktop adaptation of the installed gdmu-ui-design skill.
+"""Campus blue/white desktop presentation.
 
 View composition only. Login, queries, SMTP, proxy and close-window policies
 remain in the existing controllers. No assets are taken from reference previews.
@@ -191,7 +191,60 @@ class DashboardUI:
         self.mail_badge=tk.StringVar(value='未开始监测')
         self.connection_detail=tk.StringVar()
         self.hint=tk.StringVar(value='连接微信 → 选择宿舍 → 查看余量')
+        self.feedback_text=tk.StringVar()
+        self.feedback_display=tk.StringVar()
+        self.feedback_active=False; self.feedback_timer=None; self.feedback_serial=0
+        self.feedback_animation=None
         self.build()
+
+    def cancel_feedback_timers(self):
+        for name in ('feedback_timer','feedback_animation'):
+            timer=getattr(self,name)
+            if timer is not None: self.root.after_cancel(timer)
+            setattr(self,name,None)
+
+    def clear_feedback(self,serial=None):
+        if serial is not None and serial!=self.feedback_serial: return
+        self.cancel_feedback_timers()
+        self.feedback_active=False
+        self.feedback_text.set(''); self.feedback_display.set('')
+        self.feedback_label.place_forget()
+        self.mail_status_label.pack(side='right')
+
+    def animate_feedback(self,serial,entering=True,frame=0):
+        self.feedback_animation=None
+        if serial!=self.feedback_serial or not self.feedback_active or self.app.closed: return
+        fraction=frame/7 if entering else 1-frame/7
+        rgb=tuple(int(self.feedback_color[i:i+2],16) for i in (1,3,5))
+        color='#'+''.join(f'{round(255+(channel-255)*fraction):02x}' for channel in rgb)
+        self.feedback_label.configure(fg=color)
+        self.feedback_label.place(relx=1,x=-22,y=14+round(4*(1-fraction)),anchor='ne')
+        if frame<7:
+            self.feedback_animation=self.root.after(24,lambda:self.animate_feedback(serial,entering,frame+1))
+        elif not entering: self.clear_feedback(serial)
+
+    def resize_feedback(self,event):
+        width=max(160,min(440,event.width-300))
+        if int(self.feedback_label.cget('wraplength'))!=width:
+            self.feedback_label.configure(wraplength=width)
+
+    def notify(self,message,kind='success',duration=None):
+        if self.app.closed or getattr(self.root,'_ui_closing',False): return
+        self.cancel_feedback_timers()
+        self.feedback_serial+=1; self.feedback_active=True
+        label,color={'success':('完成',GREEN),'error':('未完成','#B42318'),
+                     'warning':('请注意','#956000'),'busy':('进行中',BLUE),
+                     'info':('提示',BLUE)}[kind]
+        self.feedback_text.set(label+' · '+message)
+        self.feedback_display.set(label+' · '+(message if len(message)<=48 else message[:48]+'…'))
+        self.feedback_color=color
+        self.mail_status_label.pack_forget()
+        self.animate_feedback(self.feedback_serial)
+        if self.app.reminders: self.app.reminders.log('操作反馈：'+message)
+        if duration is None: duration=6000 if kind in ('error','warning') else 3200
+        if duration:
+            serial=self.feedback_serial
+            self.feedback_timer=self.root.after(duration,lambda:self.animate_feedback(serial,entering=False))
 
     @staticmethod
     def set_if_changed(var,value):
@@ -207,7 +260,11 @@ class DashboardUI:
         header=tk.Frame(self.root,bg=WHITE,padx=22,pady=14); header.pack(fill='x')
         icon(header,'home',38).pack(side='left',padx=(0,10))
         text(header,'广东医 · 校园水电',16,INK,True).pack(side='left')
-        text(header,'',9,BLUE,textvariable=self.mail_badge).pack(side='right')
+        self.mail_status_label=text(header,'',9,BLUE,textvariable=self.mail_badge)
+        self.mail_status_label.pack(side='right')
+        self.feedback_label=tk.Label(header,textvariable=self.feedback_display,bg=WHITE,fg=WHITE,
+                                     font=(FONT,9),wraplength=440,justify='right',anchor='e')
+        header.bind('<Configure>',self.resize_feedback,add='+')
         footer=tk.Frame(self.root,bg=WHITE,padx=22,pady=9); footer.pack(side='bottom',fill='x')
         self.save_button=ttk.Button(footer,text='保存监测设置',style='Primary.TButton',command=lambda:a.reminders.save_settings())
         self.footer_text=text(footer,'',9,MUTED,textvariable=a.status,wraplength=1600,anchor='w',justify='left')
@@ -217,7 +274,8 @@ class DashboardUI:
         for key,label in (('overview','水电总览'),('login','微信连接'),('mail','监测设置'),('logs','运行记录')):
             button=ttk.Button(sidebar,text=label,style='Nav.TButton',command=lambda k=key:self.show(k))
             button.pack(fill='x',padx=8,pady=(16 if key=='overview' else 3,3)); self.nav[key]=button
-        text(sidebar,'v1.7.1',8,MUTED).pack(side='bottom',anchor='w',padx=24,pady=18)
+        from gdmu_config import VERSION
+        text(sidebar,'v'+VERSION,8,MUTED).pack(side='bottom',anchor='w',padx=24,pady=18)
         self.content=ScrollPage(shell); self.content.frame.pack(side='left',fill='both',expand=True)
         a.canvas=self.content.canvas
         for key,title in (('overview','水电总览'),('login','微信连接'),('mail','监测设置'),('logs','运行记录')):
@@ -257,7 +315,7 @@ class DashboardUI:
             self.metric_labels.append(label)
         text(p,'',9,MUTED,textvariable=a.updated).pack(anchor='w',pady=(0,12))
         row=tk.Frame(p,bg=BG); row.pack(fill='x',pady=(0,12))
-        self.refresh_button=a.button(row,'刷新余量',a.query_selected); self.refresh_button.pack(side='left')
+        self.refresh_button=a.button(row,'刷新余量',lambda:a.query_selected(feedback=True)); self.refresh_button.pack(side='left')
         self.monitor_button=ttk.Button(row,text='开始监测',style='Primary.TButton',command=self.toggle_monitor)
         self.monitor_button.pack(side='right')
         text(p,'',9,MUTED,textvariable=a.reminder_status,wraplength=900,justify='left').pack(anchor='w')
@@ -289,7 +347,8 @@ class DashboardUI:
         a=self.app; ctl=a.reminders; proxy=ctl.embedded; p=self.pages['login']
         b=self.card(p,'登录状态')
         text(b,'',11,BLUE,True,textvariable=self.proxy_badge).pack(anchor='w')
-        text(b,'',9,MUTED,textvariable=proxy.status,wraplength=900,justify='left').pack(anchor='w',pady=(8,12))
+        self.connection_status=text(b,'',9,MUTED,textvariable=proxy.status,wraplength=900,justify='left')
+        self.connection_status.pack(anchor='w',pady=(8,12))
         self.connect_button=ttk.Button(b,text='连接并获取登录',style='Primary.TButton',command=proxy.begin_login)
         self.connect_button.pack(anchor='w')
         text(b,'首次连接需确认安装证书和开启代理；登录成功后自动加载宿舍。',9,MUTED,wraplength=900,justify='left').pack(anchor='w',pady=(12,0))
@@ -368,7 +427,8 @@ class DashboardUI:
 
     def toggle_monitor(self):
         ctl=self.app.reminders
-        if ctl.active or ctl.preflight_busy or ctl.desired_running: ctl.stop('监测已停止。')
+        if ctl.active or ctl.preflight_busy or ctl.desired_running:
+            ctl.stop('监测已停止。'); self.notify('监测已停止。')
         else: ctl.start()
         self.refresh(force=True)
 

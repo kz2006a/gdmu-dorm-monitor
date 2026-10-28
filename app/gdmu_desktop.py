@@ -30,7 +30,8 @@ class BalanceApp:
         self.syncing_target = self.restoring = self.flow_ready = False
         self.restore_target = {}
         self.token_timer = self.initial_timer = None
-        root.title('广东医 · 宿舍水电 v1.7.1')
+        from gdmu_config import VERSION
+        root.title('广东医 · 宿舍水电 v'+VERSION)
         root.geometry(f'{max(760,min(1080,root.winfo_screenwidth()-100))}x{max(600,min(820,root.winfo_screenheight()-100))}')
         root.minsize(760,600)
         root.protocol('WM_DELETE_WINDOW',self.close)
@@ -72,7 +73,14 @@ class BalanceApp:
         self.set_busy(False)
 
     def clear_token(self):
-        self.token.set(''); self.token_changed(immediate=True)
+        changed=self.token.get()!=self.last_token_value or bool(self.token.get())
+        self.token.set('')
+        saved=self.token_changed(immediate=True) if changed else self.reminders.save_session()
+        self.feedback('Token 已清除并保存到本地。' if saved else 'Token 已从当前会话清除，但本地保存失败，请检查目录权限。',
+                      'success' if saved else 'warning')
+
+    def feedback(self,message,kind='success',duration=None):
+        self.ui.notify(message,kind,duration)
 
     def token_changed(self,event=None,immediate=False):
         if self.token.get()==self.last_token_value: return
@@ -90,7 +98,7 @@ class BalanceApp:
             self.token_timer=self.root.after(1 if immediate else 650,self.manual_login)
         else:
             self.status.set('连接微信后自动加载宿舍。')
-            self.reminders.save_session()
+            return self.reminders.save_session()
 
     def manual_login(self):
         self.token_timer=None
@@ -254,15 +262,17 @@ class BalanceApp:
         campus,building,room=self.campuses[ci],self.buildings[bi],self.rooms[ri]
         return {'campus':campus['id'],'building':building['id'],'room':room['id'],'campus_name':campus['name'],'building_name':building['name'],'room_name':room['name'],'name':self.selection_name()}
 
-    def query_selected(self):
+    def query_selected(self,feedback=False):
+        if feedback: self.ui.clear_feedback()
         bi,ri=self.building_box.current(),self.room_box.current()
         if bi<0 or ri<0:
             if not self.campuses: self.load_campuses()
             else: self.status.set('请先选择宿舍。')
             return
-        self.query(self.buildings[bi]['id'],self.rooms[ri]['id'],self.selection_name())
+        self.query(self.buildings[bi]['id'],self.rooms[ri]['id'],self.selection_name(),feedback=feedback)
 
     def query_manual(self):
+        self.ui.clear_feedback()
         try:
             building,room=int(self.building_id.get()),int(self.room_id.get())
             if min(building,room)<=0: raise ValueError()
@@ -271,9 +281,9 @@ class BalanceApp:
         self.stop_for_change('正在切换到内部编号查询。',allow_resume=True)
         for combo in self.combos: self.reset_combo(combo)
         self.flow_ready=True
-        self.query(building,room,f'楼栋 ID {building} / 房间 ID {room}')
+        self.query(building,room,f'楼栋 ID {building} / 房间 ID {room}',feedback=True)
 
-    def query(self,building,room,name):
+    def query(self,building,room,name,feedback=False):
         if self.busy: return
         token=self.token.get().strip(); self.reset_result(name)
         def done(info):
@@ -283,6 +293,9 @@ class BalanceApp:
             self.reminders.finish_recovery()
             saved=self.reminders.save_session()
             self.status.set('已更新 · 宿舍已保存在本地' if saved else '余量已更新，但本地保存失败，请检查配置目录。')
+            if feedback:
+                self.feedback('水电余量已更新，宿舍已保存。' if saved else '水电余量已更新，但宿舍未能保存到本地。',
+                              'success' if saved else 'warning')
             self.reminders.resume_for_selection()
         self.run('正在查询水电余量…',lambda:self.api.query_balance(token,building,room),done)
 

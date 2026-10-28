@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sys
 
-VERSION = '1.7.1'
+VERSION = '1.7.2'
 FIELDS = {
     'host': 'SMTP_HOST', 'port': 'SMTP_PORT', 'security': 'SMTP_SECURITY',
     'username': 'SMTP_USERNAME', 'sender': 'SMTP_SENDER', 'recipients': 'SMTP_RECIPIENTS',
