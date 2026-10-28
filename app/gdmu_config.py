@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sys
 
-VERSION = '1.6.0'
+VERSION = '1.7.0'
 FIELDS = {
     'host': 'SMTP_HOST', 'port': 'SMTP_PORT', 'security': 'SMTP_SECURITY',
     'username': 'SMTP_USERNAME', 'sender': 'SMTP_SENDER', 'recipients': 'SMTP_RECIPIENTS',
@@ -88,14 +88,21 @@ class ConfigStore:
         except ValueError:
             pass
         remembered = options.get('remember_credentials', True)
+        # Old distributed examples shipped these IDs without a user selection.
+        sample_only = (raw.get('CONFIG_VERSION') != VERSION and not raw.get('DORM_NAME', '').strip()
+                       and raw.get('BUILDING_ID') == '9552' and raw.get('ROOM_ID') == '9632')
         return {
             'options': options,
             'interval_adjusted': adjusted,
             'token': raw.get('GDMU_TOKEN', '') if remembered else '',
             'password': raw.get('SMTP_PASSWORD', '') if remembered else '',
             'target': {
-                'building': raw.get('BUILDING_ID', '1'),
-                'room': raw.get('ROOM_ID', '1'),
+                'campus': raw.get('CAMPUS_ID', ''),
+                'campus_name': raw.get('CAMPUS_NAME', ''),
+                'building_name': raw.get('BUILDING_NAME', ''),
+                'room_name': raw.get('ROOM_NAME', ''),
+                'building': '' if sample_only else raw.get('BUILDING_ID', ''),
+                'room': '' if sample_only else raw.get('ROOM_ID', ''),
                 'name': raw.get('DORM_NAME', ''),
             },
         }
@@ -108,11 +115,15 @@ class ConfigStore:
         remember = options.get('remember_credentials', True)
         values['GDMU_TOKEN'] = token if remember else ''
         values['SMTP_PASSWORD'] = password if remember else ''
-        values['BUILDING_ID'] = str(target.get('building', '9552'))
-        values['ROOM_ID'] = str(target.get('room', '9632'))
+        values['CAMPUS_ID'] = str(target.get('campus', ''))
+        values['CAMPUS_NAME'] = str(target.get('campus_name', ''))
+        values['BUILDING_NAME'] = str(target.get('building_name', ''))
+        values['ROOM_NAME'] = str(target.get('room_name', ''))
+        values['BUILDING_ID'] = str(target.get('building', ''))
+        values['ROOM_ID'] = str(target.get('room', ''))
         values['DORM_NAME'] = str(target.get('name', ''))
         lines = [
-            '# 广东医宿舍水电查询 v1.6.0 环境配置文件',
+            '# 广东医宿舍水电查询 v1.7.0 环境配置文件',
             '# 本文件由软件读写，不会执行其中的内容。',
             '# 记住凭证后会包含 Token 和 SMTP 授权码，请勿分享此文件。',
             '# 字符串使用双引号；AUTO_START=true 表示启动软件后校验并自动提醒。',

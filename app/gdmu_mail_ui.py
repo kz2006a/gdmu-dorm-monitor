@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -51,8 +52,8 @@ class ReminderController:
         if loaded['token']:
             self.app.token.set(loaded['token'])
         target = loaded['target']
-        self.app.building_id.set(target.get('building', '9552'))
-        self.app.room_id.set(target.get('room', '9632'))
+        self.app.building_id.set(target.get('building', ''))
+        self.app.room_id.set(target.get('room', ''))
         self.saved_target = dict(target)
         if target.get('name'):
             self.app.result_room.set('上次宿舍：' + target['name'])
@@ -86,7 +87,7 @@ class ReminderController:
             self.log(self.config_error + ' 请修正 .env 或在窗口中重新保存配置。')
         elif auto_start and self.vars['auto_start'].get():
             self.auto_timer = self.root.after(500, self.startup)
-        self.app.sync_status.set('等待内置同步登录响应；请在“内置同步设置”接入。' if self.vars['token_sync_enabled'].get() else '未启用自动同步。打开“内置同步设置”完成首次接入。')
+        self.app.sync_status.set('等待微信登录响应' if self.vars['token_sync_enabled'].get() else '尚未连接微信')
 
     @property
     def active(self):
@@ -103,7 +104,10 @@ class ReminderController:
 
     def startup(self):
         self.auto_timer = None
-        self.start(automatic=True)
+        self.desired_running = True
+        self.pending_token_resume = True
+        if not self.app.token.get().strip():
+            self.login_expired()
 
     def values(self):
         return {key: variable.get() for key, variable in self.vars.items()}
@@ -115,17 +119,17 @@ class ReminderController:
             if validate_auto and values['auto_start']:
                 if not values['remember_credentials']:
                     raise ValueError('启动后自动监测需要勾选保存凭证，以便读取 Token。')
-                if not self.app.token.get().strip():
-                    raise ValueError('请先填写 Token，再保存自动提醒设置。')
+                if not self.app.token.get().strip() and not values['proxy_auto_start']:
+                    raise ValueError('请先连接微信，或开启下次自动连接微信。')
                 if values['email_enabled'] and not values['desktop_enabled']:
                     reminders.SMTPConfig.from_values(values, self.password.get())
                 reminders.Rules.from_values(values)
             try:
                 building, room, name = self.target()
-                target = {'building': building, 'room': room, 'name': name}
+                selected = self.app.selected_target()
+                target = selected or (dict(self.saved_target) if str(self.saved_target.get('building')) == str(building) and str(self.saved_target.get('room')) == str(room) else {})
+                target.update(building=building, room=room, name=name)
             except ValueError:
-                if validate_auto:
-                    raise
                 target = self.saved_target
             self.store.save(values, self.app.token.get().strip(), self.password.get(), target)
             self.saved_target = dict(target)
@@ -137,8 +141,30 @@ class ReminderController:
             self.log('配置保存失败：' + text)
             return False
         if not silent:
+            self.app.status.set('设置已保存')
             self.log('设置已保存到软件目录的 .env。' + ('已保存 Token 和 SMTP 授权码。' if values['remember_credentials'] else '未保存凭证，并已清除文件中的旧凭证。'))
         return True
+
+    def save_session(self):
+        """Persist selection independently of unfinished reminder-form edits."""
+        try:
+            loaded = self.store.load()
+            options = dict(DEFAULTS, **loaded['options'])
+            options['remember_credentials'] = self.vars['remember_credentials'].get()
+            target = self.app.selected_target()
+            if target is None:
+                target = dict(self.saved_target)
+                if self.app.flow_ready:
+                    building, room, name = self.target()
+                    if str(target.get('building')) != str(building) or str(target.get('room')) != str(room):
+                        target = {}
+                    target.update(building=building, room=room, name=name)
+            self.store.save(options, self.app.token.get().strip(), self.password.get(), target)
+            self.saved_target = dict(target)
+            return True
+        except (OSError, ValueError):
+            self.log('宿舍或登录状态未能保存，请检查配置文件及目录权限。')
+            return False
 
     def sync_note(self, text):
         self.app.sync_status.set(text)
@@ -188,7 +214,7 @@ class ReminderController:
             self.token_inbox.pulse()
             self.token_inbox.collect()
             self.last_sync_error = ''
-            if self.token_validation_busy or self.preflight_busy or self.app.busy or self.pending_retarget:
+            if self.token_validation_busy or self.preflight_busy or self.app.busy:
                 return
             candidate = self.token_inbox.take()
             if candidate is not None:
@@ -205,7 +231,6 @@ class ReminderController:
             return
         try:
             guard_candidate(original, candidate)
-            building, room, name = self.target()
         except ValueError as exc:
             self.sync_note(str(exc))
             return
@@ -214,13 +239,14 @@ class ReminderController:
         self.sync_note('正在验证候选 Token（指纹 ' + fingerprint(candidate) + '）。')
         def validate():
             try:
-                self.backend.query_balance(candidate, building, room)
-                self.events.put((epoch, 'sync_valid', (original, candidate)))
+                # List validation has no dependency on a default/previous dorm.
+                campuses = self.backend.list_campuses(candidate)
+                self.events.put((epoch, 'sync_valid', (original, candidate, campuses)))
             except Exception as exc:
                 self.events.put((epoch, 'sync_error', reminders.error_text(exc)))
         threading.Thread(target=validate, daemon=True).start()
 
-    def apply_synced_token(self, original, candidate):
+    def apply_synced_token(self, original, candidate, campuses=None):
         if not self.vars['token_sync_enabled'].get():
             return
         if self.app.token.get().strip() != original:
@@ -241,12 +267,14 @@ class ReminderController:
         self.embedded.validated()
         self.app.last_token_value = candidate
         saved = self.save_settings(silent=True, validate_auto=False)
-        text = '新 Token 已通过余量查询验证并接入（指纹 ' + fingerprint(candidate) + '）。'
+        text = '登录已验证，正在加载宿舍（指纹 ' + fingerprint(candidate) + '）。'
         if not saved:
             text += ' 配置未能保存，当前仅在内存中使用。'
         self.sync_note(text)
         self.lock_settings(False)
         self.pending_token_resume = want_resume
+        self.app.cancel_requests()
+        self.app.load_campuses(prefetched=campuses)
         if not want_resume:
             self.app.reminder_status.set('Token 已更新；提醒仍保持手动停止状态。')
 
@@ -303,7 +331,7 @@ class ReminderController:
             messagebox.showinfo('请检查 SMTP 设置', str(exc), parent=self.dialog or self.root)
             return
         self.test_busy = True
-        if self.dialog is not None and self.dialog.winfo_exists():
+        if hasattr(self, 'test_button') and self.test_button.winfo_exists():
             self.test_button.configure(state='disabled')
         self.log('正在发送测试邮件…')
         def worker():
@@ -352,6 +380,11 @@ class ReminderController:
         if self.preflight_busy:
             self.log('正在校验凭证，请稍候。')
             return
+        if self.app.busy or not self.app.flow_ready:
+            self.desired_running = True
+            self.pending_token_resume = True
+            self.app.reminder_status.set('等待宿舍查询完成后开始监测')
+            return
         try:
             if self.app.busy:
                 raise ValueError('请等待当前查询完成后再启动提醒。')
@@ -391,6 +424,7 @@ class ReminderController:
         self.app.reminder_status.set(f'正在校验 Token'+(' 和 SMTP 登录' if config is not None else '')+f'：{name}…')
         self.log(f'准备监测 {name}，正在校验凭证。')
         desktop_enabled = self.vars['desktop_enabled'].get()
+        cached = getattr(self.app, 'last_balance', None)
         def validate():
             try:
                 actual_config = config
@@ -401,7 +435,10 @@ class ReminderController:
                             return
                 if cancel.is_set():
                     return
-                info = self.backend.query_balance(token, building, room)
+                if cached and cached[:3] == (token, str(building), str(room)) and time.monotonic()-cached[4] < 20:
+                    info = cached[3]
+                else:
+                    info = self.backend.query_balance(token, building, room)
                 if cancel.is_set():
                     return
                 if config is not None:
@@ -481,8 +518,17 @@ class ReminderController:
 
     def resume_for_selection(self):
         self.save_settings(silent=True, validate_auto=False)
-        if self.desired_running and self.pending_retarget:
+        if self.desired_running and (self.pending_retarget or self.pending_token_resume):
+            self.pending_token_resume = False
             self.start(automatic=True)
+
+    def login_expired(self):
+        """Allow login recovery even when the user only wants one-off queries."""
+        self.expired_intent = self.desired_running
+        self.waiting_for_token = self.vars['token_sync_enabled'].get() and self.desired_running
+        self.app.flow_ready = False
+        self.app.status.set('登录已过期，正在等待微信重新登录。')
+        self.embedded.request_login()
 
     def poll(self):
         if self.app.closed:
@@ -492,7 +538,7 @@ class ReminderController:
                 generation, kind, data = self.events.get_nowait()
                 if kind.startswith('test_'):
                     self.test_busy = False
-                    if self.dialog is not None and self.dialog.winfo_exists():
+                    if hasattr(self, 'test_button') and self.test_button.winfo_exists():
                         self.test_button.configure(state='normal')
                     if kind == 'test_error':
                         self.log('测试邮件失败：' + data)
@@ -549,7 +595,7 @@ class ReminderController:
             pass
         self.pump_token_sync()
         self.embedded.poll()
-        if self.pending_token_resume and self.desired_running and not self.app.busy and not self.preflight_busy and not self.token_validation_busy:
+        if self.pending_token_resume and self.desired_running and self.app.flow_ready and not self.app.busy and not self.preflight_busy and not self.token_validation_busy:
             self.pending_token_resume = False
             self.start(automatic=True)
         if not self.app.closed:

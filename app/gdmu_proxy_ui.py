@@ -16,7 +16,7 @@ class EmbeddedSyncUI:
         self.ctl = controller
         self.root = controller.root
         self.service = ProxyService(controller.directory)
-        self.status = tk.StringVar(self.root, value='内置同步未接入；无需安装或启动 Fiddler。')
+        self.status = tk.StringVar(self.root, value='点击连接，按提示完成首次接入。')
         self.events = queue.Queue()
         self.dialog = None
         self.busy = False
@@ -27,8 +27,40 @@ class EmbeddedSyncUI:
         self.wake_deadline = 0
         self.expiry_seen = False
         self.last_route_check = 0
+        self.login_requested = False
+        self.login_automatic = False
         self.window_closer = CloseAfterToken(controller.values, self.note)
         self.start_timer = self.root.after(800, self.startup)
+
+    def begin_login(self):
+        """Prepare automatically, retaining explicit consent for OS changes."""
+        if self.busy:
+            return
+        self.login_requested = True
+        self.login_automatic = False
+        if self.service.connected:
+            self.open_login_window()
+        else:
+            self.worker('准备登录', self.service.prepare)
+
+    def request_login(self):
+        self.login_requested = True
+        self.login_automatic = True
+        if self.service.connected and self.ctl.vars['wechat_auto_wake'].get():
+            if self.ctl.waiting_for_token:
+                self.login_requested = False  # poll owns the two-attempt recovery cycle
+            else:
+                self.open_login_window(automatic=True)
+
+    def open_login_window(self, automatic=False):
+        self.login_requested = False
+        if automatic and not self.ctl.vars['wechat_auto_wake'].get():
+            self.note('登录已过期，请在微信打开广东医缴费。')
+            return
+        if not self.ctl.vars['wechat_shortcut'].get().strip():
+            self.note('同步已连接，请在微信打开广东医缴费完成登录。')
+            return
+        self.test_wake()
 
     def startup(self):
         self.start_timer = None
@@ -85,6 +117,8 @@ class EmbeddedSyncUI:
             '使用该系统代理的应用流量会经过本地引擎；仅学校缴费域名进行 HTTPS 解密，'
             '其他域名透传。本软件只提取学校 code2Session 登录响应。\n\n'
             '关闭同步或退出时恢复原代理。请先关闭 Fiddler 或其他系统代理。', parent=self.dialog or self.root):
+            self.login_requested = False
+            self.note('已取消连接。')
             return
         self.prepare(connect_after=True)
 
@@ -93,7 +127,14 @@ class EmbeddedSyncUI:
         self.ctl.vars['token_sync_enabled'].set(True)
         self.ctl.sync_changed()
         self.ctl.token_inbox.pulse()
-        self.note('内置同步已接入。请在微信小程序查询；出现新登录响应后会自动验证 Token。')
+        self.note('同步已连接，等待微信登录。')
+        if self.login_requested:
+            if self.login_automatic and self.ctl.waiting_for_token:
+                self.login_requested = False
+            else:
+                self.open_login_window(automatic=self.login_automatic)
+        elif not self.ctl.app.token.get().strip():
+            self.open_login_window(automatic=True)
 
     def disconnect(self):
         if self.busy:
@@ -136,6 +177,9 @@ class EmbeddedSyncUI:
                 if install else '将移除由此程序目录安装的用户根证书。\n\n') + '证书指纹：\n' + thumb
         if messagebox.askokcancel('安装 HTTPS 证书' if install else '移除 HTTPS 证书', text, parent=self.dialog or self.root):
             self.worker('安装证书' if install else '移除证书', lambda: certificate_action(self.ctl.directory, install))
+        elif self.login_requested:
+            self.login_requested = False
+            self.note('已取消连接。')
 
     def choose_shortcut(self):
         path = filedialog.askopenfilename(parent=self.dialog or self.root,
@@ -254,7 +298,15 @@ class EmbeddedSyncUI:
                 break
             self.busy = False
             if kind == 'error':
+                self.login_requested = False
                 self.note(value)
+            elif action == '准备登录':
+                if certificate_trusted(self.ctl.directory):
+                    self.connect()
+                else:
+                    self.install_certificate()
+            elif action == '安装证书' and self.login_requested:
+                self.connect()
             elif action == '准备并接入':
                 try:
                     self.enable_route()

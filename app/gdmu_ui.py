@@ -19,16 +19,24 @@ FONT = 'Microsoft YaHei UI'
 
 
 def text(parent, value='', size=10, color=INK, bold=False, **kw):
-    label=tk.Label(parent, text=value, bg=parent.cget('bg'), fg=color,
-                   font=(FONT, size, 'bold' if bold else 'normal'), **kw)
+    label=tk.Label(parent,text=value,bg=parent.cget('bg'),fg=color,
+                   font=(FONT,size,'bold' if bold else 'normal'),**kw)
     if 'wraplength' in kw:
         preferred=kw['wraplength']
-        def wrap(event):
-            if not label.winfo_exists():return
-            try:padding=int(parent.cget('padx'))*2
-            except (ValueError,tk.TclError):padding=0
-            label.configure(wraplength=max(80,min(preferred,event.width-padding)))
-        parent.bind('<Configure>',wrap,add='+')
+        state={'job':None,'width':None,'wrap':preferred}
+        def apply():
+            state['job']=None
+            if not label.winfo_exists(): return
+            width=max(80,min(preferred,parent.winfo_width()-24))
+            if abs(width-state['wrap'])>=3:
+                state['wrap']=width; label.configure(wraplength=width)
+        def schedule(event):
+            if getattr(parent._root(),'_ui_closing',False): return
+            if state['width']==event.width: return
+            state['width']=event.width
+            if state['job']: label.after_cancel(state['job'])
+            state['job']=label.after(70,apply)
+        parent.bind('<Configure>',schedule,add='+')
     return label
 
 
@@ -109,406 +117,303 @@ def icon(parent, kind, size=44, bg=BLUE_LIGHT, color=BLUE, tile=False):
     return canvas
 
 
-class Panel(tk.Canvas):
-    def __init__(self, parent, height=None, padding=22, **kw):
-        super().__init__(parent, bg=parent.cget('bg'), highlightthickness=0, **kw)
-        self.body = tk.Frame(self, bg=WHITE, padx=max(0,padding-10), pady=max(0,padding-10))
-        self.item = self.create_window(0, 0, anchor='nw', window=self.body)
-        self.fixed_height = height
-        self.bind('<Configure>', self.layout)
-        self.body.bind('<Configure>', self.layout)
-    def layout(self, event=None):
-        width = max(1, self.winfo_width())
-        height = self.fixed_height or self.body.winfo_reqheight()+20
-        self.configure(height=height)
-        self.itemconfigure(self.item, width=max(1,width-20))
-        self.coords(self.item,10,10)
-        self.delete('panel-outline')
-        r=14
-        self.create_polygon(0,r,0,0,r,0,width-r,0,width,0,width,r,width,height-r,width,height,width-r,height,r,height,0,height,0,height-r,
-                            smooth=True,fill=WHITE,outline=LINE,tags='panel-outline')
-        self.tag_lower('panel-outline')
 
-
-def section(parent, title, subtitle=None):
-    frame=tk.Frame(parent,bg=WHITE)
-    frame.pack(fill='x',pady=(0,16))
-    text(frame,title,12,BLUE,True).pack(anchor='w')
-    if subtitle:text(frame,subtitle,9,MUTED,wraplength=700,justify='left').pack(anchor='w',pady=(5,0))
-    return frame
+class Panel(tk.Frame):
+    """Native geometry instead of a canvas repaint for every Configure event."""
+    def __init__(self,parent,height=None,padding=20,**kw):
+        super().__init__(parent,bg=WHITE,highlightbackground=LINE,highlightthickness=1,**kw)
+        self.body=tk.Frame(self,bg=WHITE,padx=padding,pady=padding)
+        self.body.pack(fill='both',expand=True)
 
 
 class ScrollPage:
-    def __init__(self, parent, bg=WHITE):
+    def __init__(self,parent,bg=BG):
         self.frame=tk.Frame(parent,bg=bg)
-        self.canvas=tk.Canvas(self.frame,bg=bg,highlightthickness=0)
+        self.canvas=tk.Canvas(self.frame,bg=bg,highlightthickness=0,yscrollincrement=24)
         bar=ttk.Scrollbar(self.frame,orient='vertical',command=self.canvas.yview)
-        bar.pack(side='right',fill='y');self.canvas.pack(side='left',fill='both',expand=True)
+        bar.pack(side='right',fill='y'); self.canvas.pack(side='left',fill='both',expand=True)
         self.canvas.configure(yscrollcommand=bar.set)
-        self.body=tk.Frame(self.canvas,bg=bg,padx=24,pady=20)
+        self.body=tk.Frame(self.canvas,bg=bg,padx=22,pady=20)
         self.item=self.canvas.create_window((0,0),window=self.body,anchor='nw')
-        self.body.bind('<Configure>',lambda e:self.canvas.configure(scrollregion=self.canvas.bbox('all')))
-        self.canvas.bind('<Configure>',lambda e:self.canvas.itemconfigure(self.item,width=e.width))
+        self._job=None; self._width=0; self._region=None; self.layout_count=0
+        self.body.bind('<Configure>',self.schedule)
+        self.canvas.bind('<Configure>',self.schedule)
+    def schedule(self,event=None):
+        if getattr(self.canvas._root(),'_ui_closing',False): return
+        if event is not None and event.widget==self.canvas and event.width!=self._width:
+            if self._job is not None: self.canvas.after_cancel(self._job)
+            self._job=self.canvas.after(80,self.layout)
+        elif self._job is None: self._job=self.canvas.after(24,self.layout)
+    def layout(self):
+        self._job=None
+        if not self.canvas.winfo_exists(): return
+        self.layout_count+=1
+        width=self.canvas.winfo_width()
+        if width!=self._width:
+            self._width=width; self.canvas.itemconfigure(self.item,width=max(1,width))
+        region=(0,0,width,self.body.winfo_reqheight())
+        if region!=self._region:
+            self._region=region; self.canvas.configure(scrollregion=region)
+
+
+class Fold(tk.Frame):
+    def __init__(self,parent,title):
+        super().__init__(parent,bg=WHITE)
+        self.opened=False; self.title=title
+        self.button=ttk.Button(self,text='＋ '+title,style='Quiet.TButton',command=self.toggle)
+        self.button.pack(anchor='w')
+        self.body=tk.Frame(self,bg=WHITE,pady=10)
+    def toggle(self):
+        self.opened=not self.opened
+        self.button.configure(text=('－ ' if self.opened else '＋ ')+self.title)
+        if self.opened: self.body.pack(fill='x')
+        else: self.body.pack_forget()
+
+
+def section(parent,title):
+    text(parent,title,11,INK,True).pack(anchor='w',pady=(0,12))
+
+
+def field(parent,row,title,variable,password=False,choices=None):
+    parent.columnconfigure(1,weight=1)
+    text(parent,title,9,MUTED).grid(row=row,column=0,sticky='w',padx=(0,18),pady=7)
+    w=ttk.Combobox(parent,textvariable=variable,values=choices,state='readonly') if choices else ttk.Entry(parent,textvariable=variable,show='●' if password else '')
+    w.grid(row=row,column=1,sticky='ew',pady=7)
+    return w
 
 
 class DashboardUI:
-    def __init__(self, app):
-        self.app=app;self.root=app.root
-        self.pages={};self.nav={};self.page='overview';self.last_log=None;self.last_refresh=0
-        self.proxy_badge=tk.StringVar(self.root,value='微信同步 · 未接入')
-        self.mail_badge=tk.StringVar(self.root,value='持续监测 · 未启动')
-        self.mail_summary=tk.StringVar(self.root)
-        self.rule_summary=tk.StringVar(self.root)
-        self.daily_summary=tk.StringVar(self.root)
-        self.close_summary=tk.StringVar(self.root)
-        self.hint=tk.StringVar(self.root,value='首次使用：先在“登录与同步”中接入微信，再加载宿舍列表。')
+    def __init__(self,app):
+        self.app=app; self.root=app.root
+        self.pages={}; self.nav={}; self.page='overview'
+        self.last_refresh=0; self.last_log=None; self.last_action=None; self.last_connection_action=None
+        self.proxy_badge=tk.StringVar(value='未连接微信')
+        self.mail_badge=tk.StringVar(value='未开始监测')
+        self.connection_detail=tk.StringVar()
+        self.hint=tk.StringVar(value='连接微信 → 选择宿舍 → 查看余量')
         self.build()
+
+    @staticmethod
+    def set_if_changed(var,value):
+        if var.get()!=value: var.set(value)
+
+    def card(self,page,title=None):
+        panel=Panel(page); panel.pack(fill='x',pady=(0,14))
+        if title: section(panel.body,title)
+        return panel.body
 
     def build(self):
         a=self.app
-        header=tk.Frame(self.root,bg=WHITE,padx=24,pady=12)
-        header.pack(fill='x')
-        mark=icon(header,'home',48);mark.pack(side='left',padx=(0,12))
-        brand=tk.Frame(header,bg=WHITE);brand.pack(side='left')
-        text(brand,'广东医 · 校园水电',17,INK,True).pack(anchor='w')
-        text(brand,'宿舍余量查询与桌面提醒',9,MUTED).pack(anchor='w',pady=(3,0))
-        states=tk.Frame(header,bg=WHITE);states.pack(side='right')
-        text(states,'',9,BLUE,textvariable=self.proxy_badge).pack(anchor='e')
-        text(states,'',9,MUTED,textvariable=self.mail_badge).pack(anchor='e',pady=(5,0))
-        tk.Frame(self.root,bg=LINE,height=1).pack(fill='x')
-        footer=tk.Frame(self.root,bg=WHITE,padx=20,pady=9)
-        footer.pack(side='bottom',fill='x')
-        text(footer,'状态',9,BLUE,True).pack(side='left',padx=(0,12))
-        self.footer_text=text(footer,'',9,MUTED,textvariable=a.status,anchor='w',justify='left',wraplength=800,height=2)
-        self.footer_text.pack(fill='x',expand=True)
-        shell=tk.Frame(self.root,bg=BG);shell.pack(fill='both',expand=True)
-        sidebar=tk.Frame(shell,bg=WHITE,width=164)
-        sidebar.pack(side='left',fill='y');sidebar.pack_propagate(False)
-        text(sidebar,'校园服务',9,MUTED).pack(anchor='w',padx=20,pady=(24,10))
-        for key,label in (('overview','水电总览'),('login','登录与同步'),('mail','监测与提醒'),('logs','运行记录')):
-            btn=ttk.Button(sidebar,text=label,style='Nav.TButton',command=lambda k=key:self.show(k))
-            btn.pack(fill='x',padx=10,pady=3);self.nav[key]=btn
-        text(sidebar,'个人查询工具 · v1.6.0\n数据以缴费系统为准',8,MUTED,justify='left').pack(side='bottom',anchor='w',padx=20,pady=22)
-        content=ScrollPage(shell,BG);content.frame.pack(side='left',fill='both',expand=True)
-        self.content=content;a.canvas=content.canvas
-        self.content.body.configure(padx=24,pady=23)
-        self.content.frame.bind('<Configure>',lambda e:self.footer_text.configure(wraplength=max(520,e.width-40)))
-        for key,title,subtitle in (
-            ('overview','水电总览','查看当前宿舍的水电余量，及时安排充值。'),
-            ('login','登录与同步','连接真实微信登录，自动接入新的查询凭证。'),
-            ('mail','监测与提醒','不配置邮箱也能持续监测，用 Windows 通知查看水电余量。'),
-            ('logs','运行记录','查看查询、登录同步与邮件提醒的处理结果。')):
-            page=tk.Frame(content.body,bg=BG);self.pages[key]=page
-            text(page,title,21,INK,True).pack(anchor='w')
-            text(page,subtitle,10,MUTED).pack(anchor='w',pady=(6,14))
-        self.build_overview();self.build_login();self.build_mail();self.build_logs()
-        self.show('overview')
-        self.root.bind('<MouseWheel>',a.scroll)
-
-    def heading(self,parent,title,icon_name=None):
-        row=tk.Frame(parent,bg=WHITE);row.pack(fill='x',pady=(0,16))
-        if icon_name:icon(row,icon_name,30).pack(side='left',padx=(0,9))
-        text(row,title,11,INK,True).pack(side='left')
-        return row
+        header=tk.Frame(self.root,bg=WHITE,padx=22,pady=14); header.pack(fill='x')
+        icon(header,'home',38).pack(side='left',padx=(0,10))
+        text(header,'广东医 · 校园水电',16,INK,True).pack(side='left')
+        text(header,'',9,BLUE,textvariable=self.mail_badge).pack(side='right')
+        footer=tk.Frame(self.root,bg=WHITE,padx=22,pady=9); footer.pack(side='bottom',fill='x')
+        self.save_button=ttk.Button(footer,text='保存监测设置',style='Primary.TButton',command=lambda:a.reminders.save_settings())
+        self.footer_text=text(footer,'',9,MUTED,textvariable=a.status,wraplength=1600,anchor='w',justify='left')
+        self.footer_text.pack(fill='x')
+        shell=tk.Frame(self.root,bg=BG); shell.pack(fill='both',expand=True)
+        sidebar=tk.Frame(shell,bg=WHITE,width=146); sidebar.pack(side='left',fill='y'); sidebar.pack_propagate(False)
+        for key,label in (('overview','水电总览'),('login','微信连接'),('mail','监测设置'),('logs','运行记录')):
+            button=ttk.Button(sidebar,text=label,style='Nav.TButton',command=lambda k=key:self.show(k))
+            button.pack(fill='x',padx=8,pady=(16 if key=='overview' else 3,3)); self.nav[key]=button
+        text(sidebar,'v1.7.0',8,MUTED).pack(side='bottom',anchor='w',padx=24,pady=18)
+        self.content=ScrollPage(shell); self.content.frame.pack(side='left',fill='both',expand=True)
+        a.canvas=self.content.canvas
+        for key,title in (('overview','水电总览'),('login','微信连接'),('mail','监测设置'),('logs','运行记录')):
+            page=tk.Frame(self.content.body,bg=BG); self.pages[key]=page
+            text(page,title,21,INK,True).pack(anchor='w',pady=(0,18))
+        self.build_overview(); self.build_logs()
+        self.show('overview'); self.root.bind('<MouseWheel>',a.scroll)
 
     def build_overview(self):
-        a=self.app;p=self.pages['overview']
-        text(p,'',9,BLUE,textvariable=self.hint,wraplength=740,justify='left').pack(anchor='w',pady=(0,14))
-        room=tk.Frame(p,bg=BG);room.pack(fill='x',pady=(0,12))
-        text(room,'',11,INK,True,textvariable=a.result_room,wraplength=700,justify='left').pack(anchor='w')
-        metrics=tk.Frame(p,bg=BG);metrics.pack(fill='x')
-        for col,title,value,unit,kind in ((0,'剩余电量',a.electricity,'度','electric'),(1,'剩余水量',a.water,'吨','water')):
-            metrics.columnconfigure(col,weight=1,uniform='metric')
-            card=Panel(metrics,height=153);card.grid(row=0,column=col,sticky='ew',padx=(0,8) if col==0 else (8,0))
-            top=tk.Frame(card.body,bg=WHITE);top.pack(fill='x')
-            text(top,title,10,MUTED).pack(side='left');icon(top,kind,35).pack(side='right')
-            line=tk.Frame(card.body,bg=WHITE);line.pack(anchor='w',pady=(4,4))
-            label=text(line,'',38,BLUE,True,textvariable=value);label.pack(side='left')
-            text(line,unit,11,MUTED).pack(side='left',padx=(9,0),pady=(22,0))
-            def fit(*unused,v=value,w=label,host=card.body):
-                available=max(80,host.winfo_width()-70)
-                size=38
-                while size>12 and int(self.root.tk.call('font','measure',(FONT,size,'bold'),v.get()))>available:
-                    size-=1
-                w.configure(font=(FONT,size,'bold'))
-            value.trace_add('write',fit)
-            card.body.bind('<Configure>',fit,add='+')
-        text(p,'',8,MUTED,textvariable=a.updated,wraplength=720,justify='left').pack(anchor='w',pady=(10,18))
-        select=Panel(p);select.pack(fill='x',pady=(0,16));b=select.body
-        row=self.heading(b,'选择宿舍','building')
-        a.button(row,'查询所选宿舍',a.query_selected,primary=True).pack(side='right')
-        a.button(row,'加载宿舍列表',a.load_campuses).pack(side='right',padx=(0,8))
-        selects=tk.Frame(b,bg=WHITE);selects.pack(fill='x');a.combos=[]
+        a=self.app; p=self.pages['overview']
+        self.next_row=tk.Frame(p,bg=BLUE_LIGHT,padx=14,pady=10); self.next_row.pack(fill='x',pady=(0,14))
+        text(self.next_row,'',9,BLUE,textvariable=self.hint,wraplength=600,justify='left').pack(side='left',fill='x',expand=True)
+        self.login_link=ttk.Button(self.next_row,text='连接微信',style='Primary.TButton',command=lambda:self.show('login'))
+        self.login_link.pack(side='right',padx=(10,0))
+        b=self.card(p,'当前宿舍')
+        selects=tk.Frame(b,bg=WHITE); selects.pack(fill='x'); a.combos=[]
         for col,title in enumerate(('校区','楼栋','房间')):
             selects.columnconfigure(col,weight=1,uniform='select')
-            block=tk.Frame(selects,bg=WHITE);block.grid(row=0,column=col,sticky='ew',padx=(0 if col==0 else 12,0))
-            text(block,title,9,MUTED).pack(anchor='w',pady=(0,7))
-            combo=ttk.Combobox(block,state='disabled',width=12);combo.pack(fill='x');a.combos.append(combo)
+            box=tk.Frame(selects,bg=WHITE); box.grid(row=0,column=col,sticky='ew',padx=(0 if col==0 else 10,0))
+            text(box,title,9,MUTED).pack(anchor='w',pady=(0,6))
+            combo=ttk.Combobox(box,state='disabled',width=10); combo.pack(fill='x'); a.combos.append(combo)
         a.campus_box,a.building_box,a.room_box=a.combos
-        for box,callback in zip(a.combos,(a.choose_campus,a.choose_building,a.choose_room)):box.bind('<<ComboboxSelected>>',callback)
-        shortcuts=Panel(p);shortcuts.pack(fill='x',pady=(0,16));b=shortcuts.body
-        self.heading(b,'常用服务')
-        grid=tk.Frame(b,bg=WHITE);grid.pack(fill='x')
-        for col,title,kind,command in ((0,'微信同步','sync',lambda:self.app.reminders.embedded.open()),(1,'监测设置','mail',lambda:self.app.reminders.open()),(2,'运行记录','log',lambda:self.show('logs')),(3,'开始监测','building',lambda:self.app.reminders.start())):
-            grid.columnconfigure(col,weight=1,uniform='shortcut')
-            item=tk.Frame(grid,bg=WHITE);item.grid(row=0,column=col,sticky='ew')
-            icon(item,kind,44,tile=True).pack()
-            ttk.Button(item,text=title,style='Quiet.TButton',command=command).pack(pady=(5,0))
-        status=tk.Frame(p,bg=BG);status.pack(fill='x')
-        text(status,'电余量每半小时更新；水余量每天 14:00 更新，以小程序说明为准。',8,MUTED,wraplength=700,justify='left').pack(anchor='w')
+        for box,callback in zip(a.combos,(a.choose_campus,a.choose_building,a.choose_room)): box.bind('<<ComboboxSelected>>',callback)
+        self.room_detail=text(b,'',9,MUTED,textvariable=a.result_room,wraplength=900,justify='left')
+        self.room_detail.pack(anchor='w',pady=(8,0))
+        metrics=tk.Frame(p,bg=BG); metrics.pack(fill='x',pady=(0,12))
+        self.metric_labels=[]
+        for col,title,value,unit,kind in ((0,'剩余电量',a.electricity,'度','electric'),(1,'剩余水量',a.water,'吨','water')):
+            metrics.columnconfigure(col,weight=1,uniform='metric')
+            panel=Panel(metrics,padding=18); panel.grid(row=0,column=col,sticky='nsew',padx=(0,6) if col==0 else (6,0))
+            row=tk.Frame(panel.body,bg=WHITE); row.pack(fill='x')
+            text(row,title,10,MUTED).pack(side='left'); icon(row,kind,28).pack(side='right')
+            row=tk.Frame(panel.body,bg=WHITE); row.pack(fill='x',pady=(8,0))
+            label=text(row,'',34,BLUE,True,textvariable=value); label.pack(side='left')
+            text(row,unit,10,MUTED).pack(side='right',anchor='s',pady=7)
+            self.fit_metric(panel.body,label,value)
+            self.metric_labels.append(label)
+        text(p,'',9,MUTED,textvariable=a.updated).pack(anchor='w',pady=(0,12))
+        row=tk.Frame(p,bg=BG); row.pack(fill='x',pady=(0,12))
+        self.refresh_button=a.button(row,'刷新余量',a.query_selected); self.refresh_button.pack(side='left')
+        self.monitor_button=ttk.Button(row,text='开始监测',style='Primary.TButton',command=self.toggle_monitor)
+        self.monitor_button.pack(side='right')
+        text(p,'',9,MUTED,textvariable=a.reminder_status,wraplength=900,justify='left').pack(anchor='w')
 
-    def build_manual(self,p):
-        a=self.app
-        manual=Panel(p);manual.pack(fill='x');b=manual.body
-        self.heading(b,'按内部编号查询')
-        row=tk.Frame(b,bg=WHITE);row.pack(fill='x')
-        for title,var in (('楼栋 ID',a.building_id),('房间 ID',a.room_id)):
-            text(row,title,9,MUTED).pack(side='left',padx=(0,6))
-            field=ttk.Entry(row,textvariable=var,width=9);field.pack(side='left',padx=(0,16));a.editable.append(field)
-        a.button(row,'查询',a.query_manual).pack(side='right')
-        text(b,'填写系统内部编号；楼号和门牌号不一定是内部 ID。',8,MUTED).pack(anchor='w',pady=(12,0))
+    def fit_metric(self,host,label,value):
+        fonts={size:(FONT,size,'bold') for size in range(14,35,2)}
+        state={'job':None,'key':None,'size':34}
+        def apply():
+            state['job']=None
+            if not label.winfo_exists(): return
+            key=(host.winfo_width(),value.get())
+            if key==state['key']: return
+            state['key']=key
+            available=max(60,key[0]-46)
+            size=next((s for s in sorted(fonts,reverse=True) if int(self.root.tk.call('font','measure',fonts[s],key[1]))<=available),14)
+            if size!=state['size']:
+                state['size']=size; label.configure(font=fonts[size])
+        def schedule(*unused):
+            if getattr(self.root,'_ui_closing',False): return
+            if state['job']: label.after_cancel(state['job'])
+            state['job']=label.after(70,apply)
+        value.trace_add('write',schedule); host.bind('<Configure>',schedule,add='+')
+        label._fonts=fonts
 
-    def state_row(self,parent,title,detail,command):
-        row=tk.Frame(parent,bg=WHITE);row.pack(fill='x')
-        label=text(row,'',10,BLUE,True,textvariable=title);label.pack(side='left')
-        ttk.Button(row,text='查看设置',style='Quiet.TButton',command=command).pack(side='right')
-        text(parent,'',9,MUTED,textvariable=detail,wraplength=640,justify='left').pack(anchor='w',pady=(3,0))
+    def attach(self):
+        self.build_login(); self.build_monitor(); self.refresh(force=True)
 
     def build_login(self):
-        a=self.app;p=self.pages['login']
-        panel=Panel(p);panel.pack(fill='x',pady=(0,16));b=panel.body
-        self.heading(b,'微信登录同步','sync')
-        text(b,'微信小程序返回可用 Token 后，软件会验证并接入。',10,MUTED,wraplength=620).pack(anchor='w')
-        row=tk.Frame(b,bg=WHITE);row.pack(fill='x',pady=(16,12))
-        a.sync_check=ttk.Checkbutton(row,text='接收新的登录 Token',command=lambda:a.reminders.sync_changed());a.sync_check.pack(side='left')
-        ttk.Button(row,text='内置同步设置',style='Primary.TButton',command=lambda:a.reminders.embedded.open()).pack(side='right')
-        text(b,'',9,MUTED,textvariable=a.sync_status,wraplength=650,justify='left').pack(anchor='w')
-        text(b,'',9,BLUE,textvariable=self.close_summary,wraplength=650).pack(anchor='w',pady=(12,0))
-        ttk.Button(b,text='查看接入说明',style='Quiet.TButton',command=lambda:a.reminders.show_sync_help()).pack(anchor='w',pady=(9,0))
-        panel=Panel(p);panel.pack(fill='x');b=panel.body
-        self.heading(b,'登录凭证')
-        text(b,'可手动填写自己的 Token；保存凭证选项位于监测设置。',9,MUTED,wraplength=640).pack(anchor='w',pady=(0,14))
-        a.token_entry=ttk.Entry(b,textvariable=a.token,show='●');a.token_entry.pack(fill='x');a.editable.append(a.token_entry)
+        a=self.app; ctl=a.reminders; proxy=ctl.embedded; p=self.pages['login']
+        b=self.card(p,'登录状态')
+        text(b,'',11,BLUE,True,textvariable=self.proxy_badge).pack(anchor='w')
+        text(b,'',9,MUTED,textvariable=proxy.status,wraplength=900,justify='left').pack(anchor='w',pady=(8,12))
+        self.connect_button=ttk.Button(b,text='连接并获取登录',style='Primary.TButton',command=proxy.begin_login)
+        self.connect_button.pack(anchor='w')
+        text(b,'首次连接需确认安装证书和开启代理；登录成功后自动加载宿舍。',9,MUTED,wraplength=900,justify='left').pack(anchor='w',pady=(12,0))
+        b=self.card(p,'小程序自动打开')
+        row=tk.Frame(b,bg=WHITE); row.pack(fill='x')
+        ttk.Entry(row,textvariable=ctl.vars['wechat_shortcut']).pack(side='left',fill='x',expand=True)
+        ttk.Button(row,text='选择快捷方式',command=proxy.choose_shortcut).pack(side='right',padx=(8,0))
+        ttk.Checkbutton(b,text='登录过期时自动打开小程序',variable=ctl.vars['wechat_auto_wake']).pack(anchor='w',pady=(10,0))
+        ttk.Checkbutton(b,text='获取登录后关闭本次小程序窗口',variable=ctl.vars['wechat_close_after_token'],command=proxy.close_option_changed).pack(anchor='w')
+        ttk.Button(b,text='保存连接设置',command=proxy.save).pack(anchor='w',pady=(12,0))
+        b=self.card(p)
+        advanced=Fold(b,'高级与故障处理'); advanced.pack(fill='x'); self.login_advanced=advanced
+        b=advanced.body
+        text(b,'手动 Token（粘贴后自动加载）',9,MUTED).pack(anchor='w')
+        a.token_entry=ttk.Entry(b,textvariable=a.token,show='●'); a.token_entry.pack(fill='x',pady=(6,8))
         a.token_entry.bind('<KeyRelease>',a.token_changed)
         a.token_entry.bind('<<Paste>>',lambda e:a.root.after_idle(a.token_changed))
         a.show_token=tk.BooleanVar(value=False)
-        row=tk.Frame(b,bg=WHITE);row.pack(fill='x',pady=(14,0))
-        a.token_check=ttk.Checkbutton(row,text='显示 Token',variable=a.show_token,command=lambda:a.token_entry.configure(show='' if a.show_token.get() else '●'))
-        a.token_check.pack(side='left')
-        a.button(row,'保存设置',lambda:a.reminders.save_settings()).pack(side='right')
-        a.button(row,'清空',a.clear_token).pack(side='right',padx=8)
-        spacer=tk.Frame(p,bg=BG,height=16);spacer.pack()
-        self.build_manual(p)
+        row=tk.Frame(b,bg=WHITE); row.pack(fill='x')
+        a.token_check=ttk.Checkbutton(row,text='显示 Token',variable=a.show_token,command=lambda:a.token_entry.configure(show='' if a.show_token.get() else '●')); a.token_check.pack(side='left')
+        ttk.Button(row,text='清除凭证',style='Quiet.TButton',command=a.clear_token).pack(side='right')
+        text(b,'',9,MUTED,textvariable=a.sync_status,wraplength=900,justify='left').pack(anchor='w',pady=10)
+        row=tk.Frame(b,bg=WHITE); row.pack(fill='x')
+        ttk.Button(row,text='重新加载宿舍',command=a.load_campuses).pack(side='left')
+        ttk.Button(row,text='断开同步',command=proxy.disconnect).pack(side='left',padx=8)
+        ttk.Button(row,text='恢复网络',command=proxy.recover).pack(side='left')
+        row=tk.Frame(b,bg=WHITE); row.pack(fill='x',pady=(10,0))
+        ttk.Button(row,text='绑定小程序窗口',command=proxy.choose_window).pack(side='left')
+        ttk.Button(row,text='自动识别窗口',command=proxy.automatic_window).pack(side='left',padx=8)
+        ttk.Button(row,text='移除证书',command=lambda:proxy.install_certificate(False)).pack(side='left')
+        form=tk.Frame(b,bg=WHITE); form.pack(fill='x',pady=(12,0))
+        field(form,0,'楼栋内部 ID',a.building_id); field(form,1,'房间内部 ID',a.room_id)
+        ttk.Button(b,text='按内部编号查询',command=a.query_manual).pack(anchor='w',pady=(8,0))
 
-    def build_mail(self):
-        a=self.app;p=self.pages['mail']
-        panel=Panel(p);panel.pack(fill='x',pady=(0,16));b=panel.body
-        self.heading(b,'提醒服务','mail')
-        text(b,'',12,BLUE,True,textvariable=self.mail_badge).pack(anchor='w')
-        text(b,'',10,MUTED,textvariable=a.reminder_status,wraplength=650,justify='left').pack(anchor='w',pady=(8,16))
-        row=tk.Frame(b,bg=WHITE);row.pack(fill='x')
-        ttk.Button(row,text='开始监测',style='Primary.TButton',command=lambda:a.reminders.start()).pack(side='left')
-        ttk.Button(row,text='停止监测',command=lambda:a.reminders.stop()).pack(side='left',padx=8)
-        ttk.Button(row,text='通知与监测设置',command=lambda:a.reminders.open()).pack(side='right')
-        panel=Panel(p);panel.pack(fill='x');b=panel.body
-        self.heading(b,'当前提醒规则')
-        for title,var in (('固定时间',self.daily_summary),('低余量提醒',self.rule_summary),('邮件服务',self.mail_summary)):
-            text(b,title,10,INK,True).pack(anchor='w',pady=(8,5))
-            text(b,'',10,MUTED,textvariable=var,wraplength=660,justify='left').pack(anchor='w',pady=(0,14))
-        tk.Frame(b,bg=LINE,height=1).pack(fill='x',pady=(0,14))
-        text(b,'程序保持运行且电脑不休眠时，才能执行查询和发送提醒。',9,MUTED,wraplength=660).pack(anchor='w')
+    def build_monitor(self):
+        a=self.app; ctl=a.reminders; p=self.pages['mail']; ctl.settings_widgets=[]
+        b=self.card(p,'通知方式')
+        for key,title in (('desktop_enabled','Windows 通知'),('desktop_each_query','每轮查询后显示水电余量'),('email_enabled','同时发送邮件')):
+            w=ttk.Checkbutton(b,text=title,variable=ctl.vars[key],command=self.email_visibility if key=='email_enabled' else None)
+            w.pack(anchor='w',pady=2); ctl.settings_widgets.append(w)
+        ttk.Button(b,text='测试 Windows 通知',style='Quiet.TButton',command=ctl.test_desktop).pack(anchor='w',pady=(8,0))
+        self.smtp_panel=Panel(p); b=self.smtp_panel.body
+        section(b,'邮件服务')
+        form=tk.Frame(b,bg=WHITE); form.pack(fill='x')
+        for row,title,key in ((0,'SMTP 服务器','host'),(1,'端口','port'),(2,'加密方式','security'),(3,'登录邮箱','username'),(4,'密码 / 授权码','password'),(5,'发件人（可留空）','sender'),(6,'收件人（逗号分隔）','recipients')):
+            w=field(form,row,title,ctl.password if key=='password' else ctl.vars[key],password=key=='password',choices=('SSL/TLS','STARTTLS') if key=='security' else None)
+            ctl.settings_widgets.append(w)
+            if key=='security': w.bind('<<ComboboxSelected>>',ctl.security_changed)
+        ctl.test_button=ttk.Button(b,text='发送测试邮件',command=ctl.test_email); ctl.test_button.pack(anchor='w',pady=(10,0))
+        b=self.card(p,'查询与提醒'); self.rules_panel=b.master
+        form=tk.Frame(b,bg=WHITE); form.pack(fill='x')
+        w=field(form,0,'查询间隔（分钟，至少 30）',ctl.vars['interval_minutes']); ctl.settings_widgets.append(w)
+        w=ttk.Checkbutton(b,text='低余量时警告',variable=ctl.vars['threshold_enabled']); w.pack(anchor='w',pady=(12,2)); ctl.settings_widgets.append(w)
+        form=tk.Frame(b,bg=WHITE); form.pack(fill='x')
+        for row,title,key in ((0,'电量 ≤（度）','electricity_limit'),(1,'水量 ≤（吨）','water_limit'),(2,'持续不足重复提醒（小时）','repeat_hours')):
+            ctl.settings_widgets.append(field(form,row,title,ctl.vars[key]))
+        w=ttk.Checkbutton(b,text='每天固定时间提醒',variable=ctl.vars['daily_enabled']); w.pack(anchor='w',pady=(12,2)); ctl.settings_widgets.append(w)
+        form=tk.Frame(b,bg=WHITE); form.pack(fill='x')
+        ctl.settings_widgets.append(field(form,0,'时间（如 08:00, 20:00）',ctl.vars['daily_times']))
+        b=self.card(p,'下次运行')
+        ttk.Checkbutton(b,text='保存登录凭证和邮件授权码',variable=ctl.vars['remember_credentials'],command=ctl.remember_changed).pack(anchor='w')
+        ttk.Checkbutton(b,text='打开软件后自动连接微信',variable=ctl.vars['proxy_auto_start']).pack(anchor='w',pady=3)
+        ttk.Checkbutton(b,text='打开软件后自动开始监测',variable=ctl.vars['auto_start']).pack(anchor='w')
+        text(b,'宿舍自动保存。退出或电脑休眠时，监测暂停。',9,MUTED,wraplength=900).pack(anchor='w',pady=(10,0))
+        self.email_visibility()
+
+    def email_visibility(self):
+        if not hasattr(self,'smtp_panel'): return
+        if self.app.reminders.vars['email_enabled'].get(): self.smtp_panel.pack(fill='x',pady=(0,14),before=self.rules_panel)
+        else: self.smtp_panel.pack_forget()
 
     def build_logs(self):
-        p=self.pages['logs'];panel=Panel(p);panel.pack(fill='x');b=panel.body
-        self.heading(b,'最近处理记录','log')
-        self.log=tk.Text(b,height=20,wrap='word',font=(FONT,10),bg=WHITE,fg=MUTED,relief='flat',padx=0,pady=6,
-                         selectbackground=BLUE_LIGHT,selectforeground=INK)
-        self.log.pack(fill='both',expand=True);self.log.configure(state='disabled')
+        b=self.card(self.pages['logs'])
+        self.log=tk.Text(b,height=20,wrap='word',font=(FONT,10),bg=WHITE,fg=MUTED,relief='flat',state='disabled')
+        self.log.pack(fill='both',expand=True)
+
+    def toggle_monitor(self):
+        ctl=self.app.reminders
+        if ctl.active or ctl.preflight_busy or ctl.desired_running: ctl.stop('监测已停止。')
+        else: ctl.start()
+        self.refresh(force=True)
 
     def show(self,key):
-        for page in self.pages.values():page.pack_forget()
+        if key not in self.pages: return
+        for page in self.pages.values(): page.pack_forget()
         self.pages[key].pack(fill='both',expand=True)
-        for name,button in self.nav.items():button.configure(style='Selected.Nav.TButton' if name==key else 'Nav.TButton')
-        self.page=key;self.content.canvas.yview_moveto(0)
+        for name,button in self.nav.items(): button.configure(style='Selected.Nav.TButton' if name==key else 'Nav.TButton')
+        self.page=key; self.content.canvas.yview_moveto(0); self.content.schedule()
+        if key=='mail': self.save_button.pack(side='right',before=self.footer_text,padx=(10,0))
+        else: self.save_button.pack_forget()
+        if self.app.reminders: self.refresh(force=True)
 
-    def refresh(self):
+    def refresh(self,force=False):
         ctl=self.app.reminders
-        if not ctl:return
+        if not ctl: return
         now=time.monotonic()
-        if now-self.last_refresh<.5:return
+        if not force and now-self.last_refresh<.4: return
         self.last_refresh=now
-        connected=ctl.embedded.service.connected
-        self.proxy_badge.set('微信同步 · '+('已接入' if connected else '未接入'))
-        self.mail_badge.set('持续监测 · '+('监测中' if ctl.active else '等待新 Token' if ctl.waiting_for_token else '校验中' if ctl.preflight_busy else '未启动'))
-        values=ctl.values()
-        self.daily_summary.set(('每天 '+values['daily_times']+'（北京时间）') if values['daily_enabled'] else '未开启固定时间提醒')
-        self.rule_summary.set(('电量 ≤ '+(values['electricity_limit'] or '未设置')+' 度  /  水量 ≤ '+(values['water_limit'] or '未设置')+' 吨\n每 '+values['interval_minutes']+' 分钟查询；持续不足每 '+values['repeat_hours']+' 小时提醒') if values['threshold_enabled'] else '未开启低余量提醒')
-        self.mail_summary.set(('Windows 桌面通知：'+('开启' if values['desktop_enabled'] else '关闭')+'；邮件：'+('已启用 '+values['host'] if values['email_enabled'] else '关闭（无需配置邮箱）')))
-        self.close_summary.set('同步后关闭小程序：'+('已开启，验证成功后延时 3 秒关闭' if values['wechat_close_after_token'] else '已关闭'))
-        self.hint.set('选择宿舍后可开始持续监测，最低每 30 分钟检查一次；邮箱为可选项。' if self.app.token.get().strip() else '首次使用：先在“登录与同步”中接入微信，再加载宿舍列表。')
-        logs='\n\n'.join(ctl.logs) or '暂无运行记录。查询、同步与邮件提醒的结果会显示在这里。'
-        if logs!=self.last_log:
-            self.last_log=logs;self.log.configure(state='normal');self.log.delete('1.0','end');self.log.insert('end',logs);self.log.see('end');self.log.configure(state='disabled')
-
-
-class TabHost(tk.Frame):
-    """Flat blue-underlined tabs; each page retains normal keyboard controls."""
-    def __init__(self,parent):
-        super().__init__(parent,bg=WHITE)
-        self.bar=tk.Frame(self,bg=WHITE);self.bar.pack(fill='x',pady=(0,10))
-        self.tabs=[];self.current=0
-    def add(self,page,text):
-        index=len(self.tabs)
-        item=tk.Frame(self.bar,bg=WHITE);item.pack(side='left')
-        button=ttk.Button(item,text=text,style='Tab.TButton',command=lambda:self.show(index))
-        button.pack()
-        underline=tk.Frame(item,bg=WHITE,height=3);underline.pack(fill='x',padx=20)
-        button.bind('<Left>',lambda e:self.show((index-1)%len(self.tabs)))
-        button.bind('<Right>',lambda e:self.show((index+1)%len(self.tabs)))
-        self.tabs.append((page,button,underline))
-        if len(self.tabs)==1:self.show(0)
-    def show(self,index):
-        for i,(page,button,line) in enumerate(self.tabs):
-            page.pack_forget()
-            button.configure(style='Selected.Tab.TButton' if i==index else 'Tab.TButton')
-            line.configure(bg=BLUE if i==index else WHITE)
-        self.tabs[index][0].pack(fill='both',expand=True)
-        self.current=index
-    def index(self,key):
-        return self.current if key=='current' else int(key)
-
-
-def dialog_shell(root,title,subtitle,tab_names):
-    win=tk.Toplevel(root);win.title(title)
-    win.geometry(f'890x{max(600,min(790,root.winfo_screenheight()-100))}')
-    win.minsize(740,600);win.configure(bg=WHITE)
-    header=tk.Frame(win,bg=WHITE,padx=24,pady=20);header.pack(fill='x')
-    text(header,title,19,INK,True).pack(anchor='w')
-    text(header,subtitle,9,MUTED,wraplength=780,justify='left').pack(anchor='w',pady=(6,0))
-    tk.Frame(win,bg=LINE,height=1).pack(fill='x')
-    footer=tk.Frame(win,bg=WHITE,padx=22,pady=14);footer.pack(side='bottom',fill='x')
-    notebook=TabHost(win);notebook.pack(fill='both',expand=True,padx=18,pady=(6,0))
-    pages=[]
-    for name in tab_names:
-        page=ScrollPage(notebook);notebook.add(page.frame,text=name);pages.append(page)
-    def scroll(event):
-        if event.delta and not isinstance(event.widget,ttk.Combobox):
-            selected=notebook.index('current')
-            pages[selected].canvas.yview_scroll(-1 if event.delta>0 else 1,'units')
-    win.bind('<MouseWheel>',scroll)
-    return win,footer,[page.body for page in pages],notebook
-
-
-def field(parent,row,title,variable,controller=None,password=False,choices=None):
-    parent.columnconfigure(1,weight=1)
-    text(parent,title,10,MUTED).grid(row=row,column=0,sticky='w',padx=(0,24),pady=9)
-    widget=ttk.Combobox(parent,textvariable=variable,values=choices,state='readonly') if choices else ttk.Entry(parent,textvariable=variable,show='●' if password else '')
-    widget.grid(row=row,column=1,sticky='ew',pady=9)
-    if controller:controller.settings_widgets.append(widget)
-    return widget
-
-
-def hint(parent,value,pady=12):
-    text(parent,value,9,MUTED,wraplength=700,justify='left').pack(anchor='w',pady=(pady,0))
+        state='监测中' if ctl.active else '等待微信登录' if ctl.waiting_for_token else '正在准备监测' if ctl.preflight_busy or ctl.desired_running else '未开始监测'
+        self.set_if_changed(self.mail_badge,state)
+        self.set_if_changed(self.proxy_badge,'微信同步已连接' if ctl.embedded.service.connected else '微信同步未连接')
+        connection_action=('重新获取登录' if ctl.embedded.service.connected else '连接并获取登录','disabled' if ctl.embedded.busy else 'normal')
+        if connection_action!=self.last_connection_action:
+            self.last_connection_action=connection_action
+            self.connect_button.configure(text=connection_action[0],state=connection_action[1])
+        if self.app.selected_target(): self.room_detail.pack_forget()
+        elif not self.room_detail.winfo_manager(): self.room_detail.pack(anchor='w',pady=(8,0))
+        running=ctl.active or ctl.preflight_busy or ctl.desired_running
+        action=('停止监测' if running else '开始监测', 'normal' if running or (self.app.flow_ready and not self.app.busy) else 'disabled')
+        if action!=self.last_action:
+            self.last_action=action; self.monitor_button.configure(text=action[0],state=action[1])
+        hint='正在加载宿舍…' if self.app.busy else '选择校区、楼栋和房间后自动查询' if self.app.campuses and not self.app.flow_ready else '登录成功，宿舍已自动恢复' if self.app.flow_ready else '连接微信 → 选择宿舍 → 查看余量'
+        self.set_if_changed(self.hint,hint)
+        if self.app.flow_ready: self.next_row.pack_forget()
+        elif not self.next_row.winfo_manager(): self.next_row.pack(fill='x',pady=(0,14),before=self.pages['overview'].winfo_children()[2])
+        if self.page=='logs':
+            logs='\n\n'.join(ctl.logs) or '暂无运行记录'
+            if logs!=self.last_log:
+                self.last_log=logs; self.log.configure(state='normal'); self.log.delete('1.0','end'); self.log.insert('end',logs); self.log.see('end'); self.log.configure(state='disabled')
 
 
 def build_mail_dialog(ctl):
-    win,footer,pages,book=dialog_shell(ctl.root,'监测与提醒设置','独立持续监测，Windows 通知与邮件可分别开启。最低查询间隔为 30 分钟。',
-                                     ('通知方式','提醒规则','邮件服务','启动与保存','运行记录'))
-    ctl.dialog=win;ctl.settings_widgets=[]
-    win.protocol('WM_DELETE_WINDOW',ctl.close_dialog)
-    ttk.Button(footer,text='保存设置',style='Primary.TButton',command=ctl.save_settings).pack(side='right')
-    ttk.Button(footer,text='测试桌面通知',command=ctl.test_desktop).pack(side='right',padx=10)
-    ttk.Button(footer,text='开始监测',command=ctl.start).pack(side='left')
-    ttk.Button(footer,text='停止监测',style='Quiet.TButton',command=ctl.stop).pack(side='left',padx=8)
-    b=pages[0]
-    section(b,'Windows 桌面通知','无需邮箱、账号或授权码。收到通知时会显示当前宿舍的电量和水量。')
-    for key,title in (('desktop_enabled','启用 Windows 桌面通知'),('desktop_each_query','每轮成功查询后通知水电余量'),('email_enabled','同时启用邮件提醒（可选，需配置 SMTP）')):
-        check=ttk.Checkbutton(b,text=title,variable=ctl.vars[key]);check.pack(anchor='w',pady=8);ctl.settings_widgets.append(check)
-    hint(b,'低阈值、固定时间通知使用“提醒规则”页的设置。\n达到低阈值时，同一条余量通知升级为警告，不重复弹两条。\n\nWindows 免打扰或关闭通知可能阻止横幅。\n“已提交”只代表系统接受通知请求；最小化程序可继续监测。\n关闭程序或休眠会停止运行。')
-    b=pages[2]
-    section(b,'SMTP 邮件服务','填写邮箱服务商提供的 SMTP 地址和授权码，再发送测试邮件。')
-    form=tk.Frame(b,bg=WHITE);form.pack(fill='x')
-    for row,title,key in ((0,'SMTP 服务器','host'),(1,'端口','port'),(2,'连接加密','security'),(3,'登录账号','username'),(4,'密码 / 授权码','password'),(5,'发件人邮箱','sender'),(6,'收件人邮箱','recipients')):
-        widget=field(form,row,title,ctl.password if key=='password' else ctl.vars[key],ctl,password=key=='password',choices=('SSL/TLS','STARTTLS') if key=='security' else None)
-        if key=='security':widget.bind('<<ComboboxSelected>>',ctl.security_changed)
-    hint(b,'发件人留空时使用登录账号；多个收件人用逗号分隔。\n常见端口：SSL/TLS 465，STARTTLS 587，以服务商说明为准。')
-    ctl.test_button=ttk.Button(b,text='发送测试邮件',command=ctl.test_email);ctl.test_button.pack(anchor='w',pady=14)
-    b=pages[1]
-    section(b,'提醒规则','规则按北京时间执行；水、电阈值分别判断。')
-    check=ttk.Checkbutton(b,text='每天固定时间发送余量通知',variable=ctl.vars['daily_enabled']);check.pack(anchor='w');ctl.settings_widgets.append(check)
-    form=tk.Frame(b,bg=WHITE);form.pack(fill='x',pady=(0,16))
-    field(form,0,'每天发送时间',ctl.vars['daily_times'],ctl)
-    hint(b,'使用 HH:MM，多个时间用逗号分隔，如 08:00, 20:00。',0)
-    tk.Frame(b,bg=LINE,height=1).pack(fill='x',pady=18)
-    check=ttk.Checkbutton(b,text='低余量时发送警告',variable=ctl.vars['threshold_enabled']);check.pack(anchor='w');ctl.settings_widgets.append(check)
-    form=tk.Frame(b,bg=WHITE);form.pack(fill='x')
-    for row,title,key in ((0,'电量 ≤（度）','electricity_limit'),(1,'水量 ≤（吨）','water_limit'),(2,'查询间隔（分钟，最低 30）','interval_minutes'),(3,'持续不足重复提醒（小时）','repeat_hours')):
-        field(form,row,title,ctl.vars[key],ctl)
-    hint(b,'阈值留空表示不监测该项；首次低于阈值时提醒，持续不足按间隔重复。充值恢复后可重新触发。')
-    hint(b,'自动查询和失败后的重试至少间隔 30 分钟；固定时间在两轮查询之间到达时，使用上一次成功读数并标注查询时间。关闭这两项规则仍可持续监测。')
-    b=pages[3]
-    section(b,'启动与保存','设置保存在当前软件目录，无需重新填写。')
-    ttk.Checkbutton(b,text='保存 Token 和 SMTP 密码 / 授权码',variable=ctl.vars['remember_credentials'],command=ctl.remember_changed).pack(anchor='w',pady=6)
-    ttk.Checkbutton(b,text='启动软件后自动开始提醒',variable=ctl.vars['auto_start']).pack(anchor='w',pady=6)
-    hint(b,'自动开始前验证 Token；只有启用邮件时才检查 SMTP。未配置邮箱也可自动开始监测。\n此选项不会设置 Windows 开机启动。')
-    tk.Frame(b,bg=LINE,height=1).pack(fill='x',pady=20)
-    ttk.Checkbutton(b,text='接收小程序登录响应，自动同步 Token',variable=ctl.vars['token_sync_enabled'],command=ctl.sync_changed).pack(anchor='w')
-    ttk.Button(b,text='打开微信同步设置',command=ctl.embedded.open).pack(anchor='w',pady=14)
-    hint(b,'保存凭证后，.env 包含明文 Token 和 SMTP 授权码，请勿分享。\n程序关闭或电脑休眠时，无法执行查询和邮件发送。')
-    ttk.Button(b,text='打开配置文件夹',style='Quiet.TButton',command=ctl.open_directory).pack(anchor='w',pady=14)
-    b=pages[4];section(b,'运行记录','最近的验证、查询与通知处理结果。')
-    ctl.log_widget=tk.Text(b,height=22,wrap='word',font=(FONT,10),bg=WHITE,fg=MUTED,relief='flat')
-    ctl.log_widget.pack(fill='both',expand=True)
-    ctl.log_widget.insert('end','\n'.join(ctl.logs) or '暂无处理记录，可先发送测试邮件验证配置。')
-    ctl.log_widget.configure(state='disabled')
-    ctl.lock_settings(ctl.active or ctl.preflight_busy)
-    ctl.test_button.configure(state='disabled' if ctl.test_busy else 'normal')
+    ctl.app.ui.show('mail')
 
 
 def build_proxy_dialog(panel):
-    ctl=panel.ctl
-    win,footer,pages,book=dialog_shell(panel.root,'微信同步设置','在软件内接收真实小程序的登录响应，验证成功后接续监测。',
-                                     ('同步接入','微信与窗口','启动与运行'))
-    panel.dialog=win
-    ttk.Button(footer,text='保存设置',style='Primary.TButton',command=panel.save).pack(side='right')
-    ttk.Button(footer,text='关闭接入',command=panel.disconnect).pack(side='left')
-    ttk.Button(footer,text='恢复网络',style='Quiet.TButton',command=panel.recover).pack(side='left',padx=8)
-    b=pages[0];section(b,'首次接入','按顺序准备引擎、安装专用证书，然后开启同步。')
-    grid=tk.Frame(b,bg=WHITE);grid.pack(fill='x')
-    for col,num,title,desc,command in ((0,'01','准备引擎','生成当前软件目录的专用证书。',panel.prepare),(1,'02','安装证书','安装到当前用户的根证书存储。',panel.install_certificate),(2,'03','开启同步','接入本地代理，等待登录响应。',panel.connect)):
-        grid.columnconfigure(col,weight=1,uniform='step')
-        item=tk.Frame(grid,bg=WHITE,padx=12);item.grid(row=0,column=col,sticky='nsew')
-        text(item,num,23,BLUE,True).pack(anchor='w');text(item,title,11,INK,True).pack(anchor='w',pady=(8,5))
-        text(item,desc,9,MUTED,wraplength=195,justify='left',height=3).pack(anchor='w')
-        ttk.Button(item,text=title,command=command).pack(anchor='w',pady=12)
-    tk.Frame(b,bg=LINE,height=1).pack(fill='x',pady=18)
-    text(b,'',10,BLUE,textvariable=panel.status,wraplength=700,justify='left').pack(anchor='w')
-    hint(b,'开启后，在微信中打开广东医缴费并进入查询页。新 Token 通过余量查询验证后才会接入；唤起窗口本身不代表登录成功。')
-    hint(b,'接入期间，使用系统代理的应用流量经过本地引擎。只解密学校缴费域名，其他域名透传；关闭接入或退出软件时恢复原代理。')
-    ttk.Button(b,text='移除本软件证书',style='Quiet.TButton',command=lambda:panel.install_certificate(False)).pack(anchor='w',pady=16)
-    b=pages[1];section(b,'小程序唤起','选择微信为广东医缴费创建的桌面快捷方式。')
-    ttk.Checkbutton(b,text='Token 失效时通过快捷方式唤起小程序',variable=ctl.vars['wechat_auto_wake']).pack(anchor='w',pady=(0,12))
-    ttk.Entry(b,textvariable=ctl.vars['wechat_shortcut']).pack(fill='x')
-    row=tk.Frame(b,bg=WHITE);row.pack(fill='x',pady=12)
-    ttk.Button(row,text='选择快捷方式',command=panel.choose_shortcut).pack(side='left')
-    ttk.Button(row,text='测试唤起',command=panel.test_wake).pack(side='left',padx=8)
-    tk.Frame(b,bg=LINE,height=1).pack(fill='x',pady=18)
-    section(b,'同步后的窗口处理')
-    ttk.Checkbutton(b,text='Token 验证成功 3 秒后关闭本轮小程序窗口',variable=ctl.vars['wechat_close_after_token'],command=panel.close_option_changed).pack(anchor='w')
-    hint(b,'默认识别唯一的“广东医缴费”窗口。识别不到时，先打开目标小程序，再选择窗口绑定。只关闭本软件这一轮唤起的窗口。')
-    row=tk.Frame(b,bg=WHITE);row.pack(fill='x',pady=14)
-    ttk.Button(row,text='选择小程序窗口',command=panel.choose_window).pack(side='left')
-    ttk.Button(row,text='恢复自动识别',style='Quiet.TButton',command=panel.automatic_window).pack(side='left',padx=8)
-    form=tk.Frame(b,bg=WHITE);form.pack(fill='x')
-    widget=field(form,0,'已绑定窗口',ctl.vars['wechat_window_title']);widget.configure(state='readonly')
-    hint(b,'空白表示自动识别。未产生登录响应或 Token 验证失败时，窗口保持打开。\n微信版本如果不支持创建快捷方式，可以手动打开小程序；本版不自动点击小程序内部页面。')
-    b=pages[2];section(b,'启动与运行','软件开启后，可按已保存的设置接入同步。')
-    ttk.Checkbutton(b,text='启动软件后自动开启内置同步',variable=ctl.vars['proxy_auto_start']).pack(anchor='w',pady=8)
-    hint(b,'需先安装证书并保存设置。此选项会接入当前用户系统代理；检测到其他系统代理或 PAC 时暂停接入。')
-    tk.Frame(b,bg=LINE,height=1).pack(fill='x',pady=20)
-    section(b,'本地数据与恢复')
-    hint(b,'引擎仅监听 127.0.0.1:18765，仅解密 pay.gdmu.edu.cn:443。\n\n'
-           'data/https-proxy 包含本目录证书和私钥；.env 可能包含凭证。不要分享这些运行数据。\n\n'
-           '软件异常退出后，下次启动会检查代理恢复记录。若代理已被其他程序修改，本软件不会强行覆盖。\n\n'
-           '同步开启后没有响应时，可关闭小程序窗口再重新打开，让微信重新建立连接。',0)
+    panel.ctl.app.ui.show('login')
