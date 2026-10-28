@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 import gdmu_reminders as reminders
+from gdmu_config import ConfigStore
 
 DEFAULTS = {
     'host': '', 'port': '465', 'security': 'SSL/TLS', 'username': '',
@@ -15,15 +16,22 @@ DEFAULTS = {
     'daily_times': '08:00, 20:00', 'threshold_enabled': True,
     'electricity_limit': '20', 'water_limit': '1',
     'interval_minutes': '30', 'repeat_hours': '24',
+    'remember_credentials': True, 'auto_start': False,
 }
 
 
 class ReminderController:
-    def __init__(self, app, backend, config_dir=None):
+    def __init__(self, app, backend, config_dir=None, auto_start=True):
         self.app, self.root, self.backend = app, app.root, backend
-        self.directory = Path(config_dir) if config_dir else Path(os.environ.get(
-            'LOCALAPPDATA', str(Path.home() / 'AppData' / 'Local'))) / 'GDMUDormMonitor'
-        saved = reminders.load_json(self.directory / 'settings.json')
+        self.store = ConfigStore(config_dir)
+        self.directory = self.store.directory
+        self.config_error = ''
+        try:
+            loaded = self.store.load()
+        except (OSError, ValueError) as exc:
+            self.config_error = str(exc) if isinstance(exc, ValueError) else '无法读取软件目录中的 .env 配置文件。'
+            loaded = {'options': {}, 'token': '', 'password': '', 'target': {}}
+        saved = loaded['options']
         self.vars = {}
         for key, default in DEFAULTS.items():
             value = saved.get(key, default)
@@ -31,7 +39,15 @@ class ReminderController:
                 self.vars[key] = tk.BooleanVar(self.root, value=value if isinstance(value, bool) else default)
             else:
                 self.vars[key] = tk.StringVar(self.root, value=str(value))
-        self.password = tk.StringVar(self.root)
+        self.password = tk.StringVar(self.root, value=loaded['password'])
+        if loaded['token']:
+            self.app.token.set(loaded['token'])
+        target = loaded['target']
+        self.app.building_id.set(target.get('building', '9552'))
+        self.app.room_id.set(target.get('room', '9632'))
+        self.saved_target = dict(target)
+        if target.get('name'):
+            self.app.result_room.set('上次宿舍：' + target['name'])
         self.events = queue.Queue()
         self.monitor = None
         self.generation = 0
@@ -40,22 +56,67 @@ class ReminderController:
         self.log_widget = None
         self.logs = []
         self.test_busy = False
-        self.root.after(250, self.poll)
+        self.desired_running = False
+        self.pending_retarget = False
+        self.preflight_busy = False
+        self.validation_cancel = threading.Event()
+        self.auto_timer = None
+        self.poll_timer = self.root.after(250, self.poll)
+        if self.config_error:
+            self.app.reminder_status.set('配置读取失败：' + self.config_error)
+            self.log(self.config_error + ' 请修正 .env 或在窗口中重新保存配置。')
+        elif auto_start and self.vars['auto_start'].get():
+            self.auto_timer = self.root.after(500, self.startup)
 
     @property
     def active(self):
         return self.monitor is not None and not self.monitor.stop_event.is_set()
 
+    @property
+    def startup_pending(self):
+        return self.auto_timer is not None
+
+    def cancel_startup(self):
+        if self.auto_timer is not None:
+            self.root.after_cancel(self.auto_timer)
+            self.auto_timer = None
+
+    def startup(self):
+        self.auto_timer = None
+        self.start(automatic=True)
+
     def values(self):
         return {key: variable.get() for key, variable in self.vars.items()}
 
-    def save_settings(self):
+    def save_settings(self, silent=False, validate_auto=True):
         try:
-            reminders.save_json(self.directory / 'settings.json', self.values())
-        except OSError:
-            messagebox.showerror('保存失败', '普通设置无法写入本机配置目录。', parent=self.dialog or self.root)
-            return
-        self.log('普通设置已保存，未保存 Token 或 SMTP 密码 / 授权码。')
+            values = self.values()
+            if validate_auto and values['auto_start']:
+                if not values['remember_credentials']:
+                    raise ValueError('启动后自动提醒需要勾选保存 Token 和 SMTP 授权码。')
+                if not self.app.token.get().strip():
+                    raise ValueError('请先填写 Token，再保存自动提醒设置。')
+                reminders.SMTPConfig.from_values(values, self.password.get())
+                reminders.Rules.from_values(values)
+            try:
+                building, room, name = self.target()
+                target = {'building': building, 'room': room, 'name': name}
+            except ValueError:
+                if validate_auto:
+                    raise
+                target = self.saved_target
+            self.store.save(values, self.app.token.get().strip(), self.password.get(), target)
+            self.saved_target = dict(target)
+            self.config_error = ''
+        except (OSError, ValueError) as exc:
+            text = str(exc) if isinstance(exc, ValueError) else '无法写入软件目录的 .env，请把整个程序文件夹放到可写位置。'
+            if not silent:
+                messagebox.showerror('保存失败', text, parent=self.dialog or self.root)
+            self.log('配置保存失败：' + text)
+            return False
+        if not silent:
+            self.log('设置已保存到软件目录的 .env。' + ('已保存 Token 和 SMTP 授权码。' if values['remember_credentials'] else '未保存凭证，并已清除文件中的旧凭证。'))
+        return True
 
     def log(self, text):
         self.logs.append(f'{reminders.now_local():%H:%M:%S}  {text}')
@@ -86,7 +147,7 @@ class ReminderController:
         tk.Label(top, text='可同时开启每日定时提醒和低余量提醒。', fg='#c4d3e9', bg='#152b4b', font=('Microsoft YaHei UI', 10)).pack(anchor='w', pady=(5, 0))
         actions = tk.Frame(win, bg='#e8eef7', padx=18, pady=10)
         actions.pack(side='bottom', fill='x')
-        ttk.Button(actions, text='保存普通设置', command=self.save_settings).pack(side='left')
+        ttk.Button(actions, text='保存设置', command=self.save_settings).pack(side='left')
         self.test_button = ttk.Button(actions, text='发送测试邮件', command=self.test_email)
         self.test_button.pack(side='left', padx=8)
         ttk.Button(actions, text='停止提醒', command=self.stop).pack(side='right')
@@ -124,7 +185,15 @@ class ReminderController:
             self.settings_widgets.append(field)
         ttk.Label(smtp, text='发件人留空时使用登录账号；多个收件人用逗号分隔。', foreground='#728096', wraplength=590).grid(row=7, column=0, columnspan=2, sticky='w', pady=(8, 0))
         ttk.Label(smtp, text='请填写邮箱服务商提供的 SMTP 参数；授权码可能不同于网页登录密码。\n常见端口：SSL/TLS 465，STARTTLS 587，以服务商说明为准。', foreground='#728096', wraplength=600).grid(row=8, column=0, columnspan=2, sticky='w', pady=(5, 0))
-        ttk.Label(smtp, text='密码 / 授权码只在本次运行内使用，不写入配置文件。', foreground='#728096', wraplength=600).grid(row=9, column=0, columnspan=2, sticky='w', pady=(5, 0))
+        ttk.Label(smtp, text='设置保存在软件文件夹的 .env。勾选保存凭证后，该文件包含 Token 和授权码，请勿分享。', foreground='#728096', wraplength=600).grid(row=9, column=0, columnspan=2, sticky='w', pady=(5, 0))
+        prefs = ttk.LabelFrame(body, text='重启与配置保存', padding=14)
+        prefs.pack(fill='x', pady=(14, 0))
+        ttk.Checkbutton(prefs, text='将 Token 和 SMTP 密码 / 授权码保存到当前目录 .env',
+                        variable=self.vars['remember_credentials'], command=self.remember_changed).pack(anchor='w')
+        ttk.Checkbutton(prefs, text='启动软件后自动开始提醒（先校验 Token 和 SMTP 登录）',
+                        variable=self.vars['auto_start']).pack(anchor='w', pady=(8, 0))
+        ttk.Label(prefs, text='保存设置、开始提醒或退出软件时写入配置；校验失败会暂停并显示原因。\n此选项用于启动本软件后的自动提醒，不会设置 Windows 开机启动。', foreground='#728096', wraplength=610).pack(anchor='w', pady=(8, 0))
+        ttk.Button(prefs, text='打开配置所在文件夹', command=self.open_directory).pack(anchor='w', pady=(8, 0))
 
         rules = ttk.LabelFrame(body, text='提醒规则', padding=14)
         rules.pack(fill='x', pady=(14, 0))
@@ -143,7 +212,7 @@ class ReminderController:
         self.rule_field(rules, 7, '查询间隔（分钟）', 'interval_minutes')
         self.rule_field(rules, 8, '持续不足重复提醒（小时）', 'repeat_hours')
         ttk.Label(rules, text='首次低于阈值时提醒；持续不足按上述间隔再次提醒。充值恢复后重新触发。', foreground='#728096', wraplength=610).grid(row=9, column=0, columnspan=2, sticky='w', pady=(8, 0))
-        ttk.Label(rules, text='提醒绑定启动时的宿舍。修改设置前请停止提醒，修改后重新启动。\n程序关闭、电脑关机或休眠期间无法执行查询和发送。最小化窗口可继续运行。', foreground='#526581', wraplength=610).grid(row=10, column=0, columnspan=2, sticky='w', pady=(8, 0))
+        ttk.Label(rules, text='监测中切换宿舍会先暂停，选好新房间后自动校验并继续，无需重启软件。\n程序关闭、电脑关机或休眠期间无法执行查询和发送。最小化窗口可继续运行。', foreground='#526581', wraplength=610).grid(row=10, column=0, columnspan=2, sticky='w', pady=(8, 0))
 
         logbox = ttk.LabelFrame(body, text='运行记录', padding=10)
         logbox.pack(fill='x', pady=(14, 0))
@@ -151,7 +220,7 @@ class ReminderController:
         self.log_widget.pack(fill='x')
         self.log_widget.insert('end', '\n'.join(self.logs) or '尚未启动提醒。可先发送测试邮件，验证 SMTP 配置。')
         self.log_widget.configure(state='disabled')
-        self.lock_settings(self.active)
+        self.lock_settings(self.active or self.preflight_busy)
         self.test_button.configure(state='disabled' if self.test_busy else 'normal')
 
     def rule_field(self, parent, row, title, key):
@@ -159,6 +228,16 @@ class ReminderController:
         field = ttk.Entry(parent, textvariable=self.vars[key])
         field.grid(row=row, column=1, sticky='ew', pady=4)
         self.settings_widgets.append(field)
+
+    def remember_changed(self):
+        if not self.vars['remember_credentials'].get():
+            self.vars['auto_start'].set(False)
+
+    def open_directory(self):
+        try:
+            os.startfile(str(self.directory))
+        except OSError:
+            messagebox.showerror('无法打开', '请手动打开 EXE 所在的程序文件夹。', parent=self.dialog or self.root)
 
     def security_changed(self, event=None):
         current = self.vars['port'].get()
@@ -201,14 +280,17 @@ class ReminderController:
                 raise ValueError()
         except ValueError:
             raise ValueError('请先选择宿舍，或填写有效的内部楼栋、房间 ID。') from None
-        return building, room, f'楼栋 ID {building} / 房间 ID {room}'
+        saved = self.saved_target
+        name = saved.get('name') if str(saved.get('building')) == str(building) and str(saved.get('room')) == str(room) else ''
+        return building, room, name or f'楼栋 ID {building} / 房间 ID {room}'
 
-    def start(self):
+    def start(self, automatic=False):
+        self.cancel_startup()
         if self.active:
             self.log('提醒已在运行。如需修改设置，请先停止。')
             return
-        if self.monitor is not None and self.monitor.thread and self.monitor.thread.is_alive():
-            messagebox.showinfo('正在停止', '上一轮查询或发送正在退出，请稍后再启动。', parent=self.dialog or self.root)
+        if self.preflight_busy:
+            self.log('正在校验凭证，请稍候。')
             return
         try:
             if self.app.busy:
@@ -220,20 +302,66 @@ class ReminderController:
             rules = reminders.Rules.from_values(self.values())
             building, room, name = self.target()
         except ValueError as exc:
-            messagebox.showinfo('请检查提醒配置', str(exc), parent=self.dialog or self.root)
+            self.app.reminder_status.set(('自动启动未完成：' if automatic else '提醒未启动：') + str(exc))
+            self.log(str(exc))
+            if not automatic:
+                messagebox.showinfo('请检查提醒配置', str(exc), parent=self.dialog or self.root)
             return
+        if not self.save_settings(silent=True, validate_auto=False):
+            self.app.reminder_status.set('配置保存失败，提醒未启动。请把程序放到可写文件夹。')
+            return
+        self.desired_running = True
+        self.pending_retarget = False
+        self.preflight_busy = True
         self.generation += 1
         generation = self.generation
+        cancel = threading.Event()
+        self.validation_cancel = cancel
+        old_monitor = self.monitor
+        self.lock_settings(True)
+        self.app.reminder_status.set(f'正在校验 Token 和 SMTP 登录：{name}…')
+        self.log(f'准备监测 {name}，正在校验凭证。')
+        def validate():
+            try:
+                if old_monitor is not None:
+                    old_monitor.stop()
+                    while old_monitor.thread and old_monitor.thread.is_alive():
+                        if cancel.wait(.1):
+                            return
+                if cancel.is_set():
+                    return
+                info = self.backend.query_balance(token, building, room)
+                if cancel.is_set():
+                    return
+                reminders.check_smtp_login(config)
+                if cancel.is_set():
+                    return
+                self.events.put((generation, 'validated', (token, building, room, name, config, rules, info)))
+            except Exception as exc:
+                if not cancel.is_set():
+                    self.events.put((generation, 'validation_error', (reminders.error_text(exc), automatic)))
+        threading.Thread(target=validate, daemon=True).start()
+
+    def activate(self, generation, payload):
+        token, building, room, name, config, rules, info = payload
+        self.preflight_busy = False
+        if not self.desired_running:
+            return
         self.monitor = reminders.Monitor(self.backend, token, building, room, name, config, rules,
             lambda kind, data: self.events.put((generation, kind, data)),
-            state_path=self.directory / 'reminder-history.json')
+            state_path=self.directory / 'reminder-history.json', initial_info=info)
         self.lock_settings(True)
         self.app.reminder_status.set(f'提醒运行中：{name}；每 {rules.interval_minutes} 分钟检查。')
-        self.log(f'已开始监测：{name}。固定时间使用北京时间。')
+        self.log(f'凭证校验成功，已开始监测：{name}。固定时间使用北京时间。')
         self.monitor.start()
 
     def stop(self, reason='提醒已停止。'):
-        was_active = self.active
+        was_active = self.active or self.preflight_busy or self.pending_retarget or self.startup_pending
+        self.cancel_startup()
+        self.desired_running = False
+        self.pending_retarget = False
+        self.preflight_busy = False
+        self.validation_cancel.set()
         if self.monitor is not None:
             self.monitor.stop()
         self.generation += 1
@@ -241,6 +369,29 @@ class ReminderController:
         if was_active:
             self.app.reminder_status.set(reason)
             self.log(reason)
+
+    def pause_for_selection(self, reason):
+        if not (self.active or self.desired_running or self.preflight_busy or self.startup_pending):
+            return
+        self.cancel_startup()
+        if self.pending_retarget and not self.active and not self.preflight_busy:
+            return
+        self.desired_running = True
+        self.pending_retarget = True
+        self.preflight_busy = False
+        self.validation_cancel.set()
+        if self.monitor is not None:
+            self.monitor.stop()
+        self.generation += 1
+        self.lock_settings(False)
+        text = reason + ' 选好新房间后会自动继续提醒。'
+        self.app.reminder_status.set(text)
+        self.log(text)
+
+    def resume_for_selection(self):
+        self.save_settings(silent=True, validate_auto=False)
+        if self.desired_running and self.pending_retarget:
+            self.start(automatic=True)
 
     def poll(self):
         if self.app.closed:
@@ -262,7 +413,19 @@ class ReminderController:
                     continue
                 if generation != self.generation:
                     continue
-                if kind == 'balance':
+                if kind == 'validated':
+                    self.activate(generation, data)
+                elif kind == 'validation_error':
+                    self.preflight_busy = False
+                    self.desired_running = False
+                    self.pending_retarget = False
+                    self.lock_settings(False)
+                    text, automatic = data
+                    self.log('凭证校验失败：' + text)
+                    self.app.reminder_status.set('提醒已暂停：' + text)
+                    if not automatic:
+                        messagebox.showerror('凭证校验未通过', text, parent=self.dialog or self.root)
+                elif kind == 'balance':
                     info = data['info']
                     self.app.result_room.set(data['name'])
                     for variable, key in ((self.app.electricity, 'electricityBalance'), (self.app.water, 'waterBalance')):
@@ -273,10 +436,13 @@ class ReminderController:
                     self.log(data)
                     self.app.reminder_status.set(data)
                     if kind == 'stopped':
+                        self.desired_running = False
+                        self.pending_retarget = False
                         self.lock_settings(False)
         except queue.Empty:
             pass
-        self.root.after(250, self.poll)
+        if not self.app.closed:
+            self.poll_timer = self.root.after(250, self.poll)
 
     def close_dialog(self):
         if self.dialog is not None:
@@ -285,5 +451,9 @@ class ReminderController:
         self.settings_widgets = []
 
     def close(self):
+        self.root.after_cancel(self.poll_timer)
+        self.cancel_startup()
+        if not self.config_error:
+            self.save_settings(silent=True, validate_auto=False)
         self.stop()
         self.password.set('')

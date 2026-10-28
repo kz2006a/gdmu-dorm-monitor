@@ -1,8 +1,12 @@
+"""Run the desktop application from a source checkout."""
 from pathlib import Path
-import runpy
 import sys
-ROOT = Path(__file__).resolve().parent
+import tkinter as tk
 sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'app'))
+from gdmu_desktop import BalanceApp
 if __name__ == '__main__':
-    runpy.run_path(str(ROOT / 'app/gdmu_desktop.pyw'), run_name='__main__')
+    root = tk.Tk()
+    BalanceApp(root, config_dir=ROOT)
+    root.mainloop()

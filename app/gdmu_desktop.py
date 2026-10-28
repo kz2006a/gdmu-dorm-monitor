@@ -18,7 +18,7 @@ except (ImportError, SystemExit):
 
 
 class BalanceApp:
-    def __init__(self, root, backend=api):
+    def __init__(self, root, backend=api, config_dir=None, auto_start=True):
         self.root, self.api = root, backend
         self.busy = False
         self.closed = False
@@ -36,7 +36,8 @@ class BalanceApp:
         self.room_id = tk.StringVar(value='1')
         self.reminder_status = tk.StringVar(value='邮件提醒未启动。先配置 SMTP 服务与提醒规则。')
         self.reminders = None
-        root.title('广东医 · 宿舍水电查询')
+        self.syncing_target = False
+        root.title('广东医 · 宿舍水电查询 v1.2.0')
         height = max(600, min(860, root.winfo_screenheight() - 100))
         root.geometry(f'820x{height}')
         root.minsize(720, 600)
@@ -53,10 +54,11 @@ class BalanceApp:
         style.configure('TCheckbutton', background='#f3f6fb')
         self.build_ui()
         from gdmu_mail_ui import ReminderController
-        self.reminders = ReminderController(self, backend)
+        self.reminders = ReminderController(self, backend, config_dir=config_dir, auto_start=auto_start)
+        self.last_token_value = self.token.get()
         self.building_id.trace_add('write', self.manual_target_changed)
         self.room_id.trace_add('write', self.manual_target_changed)
-        self.root.after(100, self.poll)
+        self.poll_timer = self.root.after(100, self.poll)
 
     def label(self, parent, text, **kwargs):
         opts = dict(bg=parent.cget('bg'), fg='#23334d', font=('Microsoft YaHei UI', 10))
@@ -96,13 +98,14 @@ class BalanceApp:
         self.token_entry.pack(side='left', fill='x', expand=True)
         self.editable.append(self.token_entry)
         self.button(token_row, '清空', self.clear_token).pack(side='left', padx=(8, 0))
+        self.button(token_row, '保存配置', lambda: self.reminders.save_settings()).pack(side='left', padx=(8, 0))
         self.show_token = tk.BooleanVar(value=False)
         self.token_check = ttk.Checkbutton(token_row, text='显示', variable=self.show_token,
                                           command=lambda: self.token_entry.configure(show='' if self.show_token.get() else '●'))
         self.token_check.pack(side='left', padx=(8, 0))
         self.token_entry.bind('<KeyRelease>', self.token_changed)
         self.token_entry.bind('<<Paste>>', lambda event: self.root.after_idle(self.token_changed))
-        self.label(body, '粘贴 Fiddler 中自己的 token 值，仅在本次运行内使用。', fg='#728096', font=('Microsoft YaHei UI', 9)).pack(anchor='w')
+        self.label(body, 'Token 可保存到软件目录 .env，重启自动读取；保存选项位于 SMTP 与提醒设置。', fg='#728096', font=('Microsoft YaHei UI', 9)).pack(anchor='w')
 
         select_header = tk.Frame(body, bg='#f3f6fb')
         select_header.pack(fill='x', pady=(18, 7))
@@ -189,6 +192,9 @@ class BalanceApp:
     def token_changed(self, event=None):
         if self.busy:
             return
+        if self.token.get() == self.last_token_value:
+            return
+        self.last_token_value = self.token.get()
         self.stop_for_change('Token 已更改，提醒已停止。更新后请重新启动。')
         self.campuses, self.buildings, self.rooms = [], [], []
         for combo in self.combos:
@@ -241,7 +247,8 @@ class BalanceApp:
                     messagebox.showerror('查询未完成', text, parent=self.root)
         except queue.Empty:
             pass
-        self.root.after(100, self.poll)
+        if not self.closed:
+            self.poll_timer = self.root.after(100, self.poll)
 
     def fill(self, combo, items):
         names = [item['name'] for item in items]
@@ -251,7 +258,7 @@ class BalanceApp:
         combo.set('')
 
     def load_campuses(self):
-        self.stop_for_change('宿舍列表已重新加载，提醒已停止。选好宿舍后请重新启动。')
+        self.stop_for_change('正在重新选择宿舍，监测已暂停。', allow_resume=True)
         self.campuses, self.buildings, self.rooms = [], [], []
         for combo in self.combos:
             self.reset_combo(combo)
@@ -264,7 +271,7 @@ class BalanceApp:
         self.run('正在加载校区…', lambda: self.api.list_campuses(token), done)
 
     def choose_campus(self, event=None):
-        self.stop_for_change('校区已切换，提醒已停止。选好新宿舍后请重新启动。')
+        self.stop_for_change('校区已切换，监测已暂停。', allow_resume=True)
         self.buildings, self.rooms = [], []
         self.reset_combo(self.building_box)
         self.reset_combo(self.room_box)
@@ -281,7 +288,7 @@ class BalanceApp:
         self.run('正在加载楼栋…', lambda: self.api.list_buildings(token, campus['id']), done)
 
     def choose_building(self, event=None):
-        self.stop_for_change('楼栋已切换，提醒已停止。选好新宿舍后请重新启动。')
+        self.stop_for_change('楼栋已切换，监测已暂停。', allow_resume=True)
         self.rooms = []
         self.reset_combo(self.room_box)
         self.reset_result()
@@ -297,12 +304,18 @@ class BalanceApp:
         self.run('正在加载房间…', lambda: self.api.list_rooms(token, campus['id'], building['id']), done)
 
     def choose_room(self, event=None):
-        self.stop_for_change('房间已切换，提醒已停止。请为新宿舍重新启动。')
+        self.stop_for_change('房间已切换，正在切换监测目标。', allow_resume=True)
         self.reset_result(self.selection_name())
         bi, ri = self.building_box.current(), self.room_box.current()
         if bi >= 0 and ri >= 0:
-            self.building_id.set(str(self.buildings[bi]['id']))
-            self.room_id.set(str(self.rooms[ri]['id']))
+            self.syncing_target = True
+            try:
+                self.building_id.set(str(self.buildings[bi]['id']))
+                self.room_id.set(str(self.rooms[ri]['id']))
+            finally:
+                self.syncing_target = False
+            if self.reminders:
+                self.reminders.resume_for_selection()
         self.status.set('已切换宿舍，点击“查询所选宿舍”获取余量。')
 
     def selection_name(self):
@@ -329,7 +342,7 @@ class BalanceApp:
         if self.reminders and self.reminders.active:
             current = self.reminders.monitor
             if str(current.building) != str(building) or str(current.room) != str(room):
-                self.stop_for_change('查询宿舍已更改，提醒已停止。请为新宿舍重新启动。')
+                self.stop_for_change('正在切换监测宿舍。', allow_resume=True)
         self.reset_result(name)
         token = self.token.get().strip()
         def done(info):
@@ -338,21 +351,28 @@ class BalanceApp:
             self.water.set('未提供' if water is None or water == '' else str(water))
             self.updated.set('查询成功于 ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '；读数更新时间以上游为准。')
             self.status.set('查询完成。可重新选择校区、楼栋或房间。')
+            if self.reminders and self.reminders.pending_retarget:
+                self.reminders.resume_for_selection()
         self.run('正在查询水电余量…', lambda: self.api.query_balance(token, building, room), done)
 
     def close(self):
         if self.reminders:
             self.reminders.close()
         self.closed = True
+        self.root.after_cancel(self.poll_timer)
         self.token.set('')
         self.root.destroy()
 
-    def stop_for_change(self, reason):
-        if self.reminders and self.reminders.active:
-            self.reminders.stop(reason)
+    def stop_for_change(self, reason, allow_resume=False):
+        if self.reminders:
+            if allow_resume:
+                self.reminders.pause_for_selection(reason)
+            elif self.reminders.active or self.reminders.preflight_busy or self.reminders.pending_retarget or self.reminders.startup_pending:
+                self.reminders.stop(reason)
 
     def manual_target_changed(self, *args):
-        self.stop_for_change('内部宿舍编号已修改，提醒已停止。请重新启动。')
+        if not self.syncing_target:
+            self.stop_for_change('内部编号已修改；点击按编号查询后继续监测。', allow_resume=True)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
 """SMTP delivery and daily/low-balance reminder scheduling."""
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
@@ -144,14 +145,8 @@ def error_text(exc):
     return '操作未完成，请检查设置后重试。'
 
 
-def send_email(config, subject, body):
-    msg = EmailMessage()
-    msg['Subject'] = subject
-    msg['From'] = config.sender
-    msg['To'] = ', '.join(config.recipients)
-    msg['Date'] = format_datetime(now_local())
-    msg['Message-ID'] = make_msgid()
-    msg.set_content(body)
+@contextmanager
+def authenticated_smtp(config):
     context = ssl.create_default_context()
     if config.security == 'SSL/TLS':
         connection = smtplib.SMTP_SSL(config.host, config.port, timeout=25, context=context)
@@ -163,6 +158,23 @@ def send_email(config, subject, body):
             smtp.starttls(context=context)
             smtp.ehlo()
         smtp.login(config.username, config.password)
+        yield smtp
+
+
+def check_smtp_login(config):
+    with authenticated_smtp(config):
+        return True
+
+
+def send_email(config, subject, body):
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = config.sender
+    msg['To'] = ', '.join(config.recipients)
+    msg['Date'] = format_datetime(now_local())
+    msg['Message-ID'] = make_msgid()
+    msg.set_content(body)
+    with authenticated_smtp(config) as smtp:
         refused = smtp.send_message(msg, from_addr=config.sender, to_addrs=list(config.recipients))
     return {'accepted': len(config.recipients) - len(refused), 'refused': len(refused)}
 
@@ -264,11 +276,12 @@ def save_json(path, data):
 
 class Monitor:
     def __init__(self, backend, token, building, room, name, smtp, rules, notify,
-                 state_path=None, sender=send_email, clock=now_local):
+                 state_path=None, sender=None, clock=now_local, initial_info=None):
         self.backend, self.token = backend, token
         self.building, self.room, self.name = building, room, name
         self.smtp, self.rules, self.notify = smtp, rules, notify
-        self.state_path, self.sender, self.clock = state_path, sender, clock
+        self.state_path, self.sender, self.clock = state_path, sender or send_email, clock
+        self.initial_info = initial_info
         self.stop_event = threading.Event()
         histories = load_json(state_path) if state_path else {}
         self.dorm_key = f'{building}:{room}'
@@ -304,7 +317,10 @@ class Monitor:
             return
         self.next_poll = monotonic + self.rules.interval_minutes * 60
         try:
-            info = self.backend.query_balance(self.token, self.building, self.room)
+            if self.initial_info is not None:
+                info, self.initial_info = self.initial_info, None
+            else:
+                info = self.backend.query_balance(self.token, self.building, self.room)
             if self.stop_event.is_set():
                 return
             self.failures = 0

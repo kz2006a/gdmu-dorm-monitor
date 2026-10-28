@@ -1,0 +1,81 @@
+"""Offline release smoke test, run only with an explicit launcher argument."""
+import json
+from pathlib import Path
+import tempfile
+import time
+import traceback
+import tkinter as tk
+import gdmu_balance as api
+import gdmu_config as config
+import gdmu_desktop as gui
+import gdmu_reminders as reminders
+
+
+def run(report_path):
+    report = {'passed': False, 'checks': [], 'app_loaded_from': str(Path(gui.__file__).resolve())}
+    apps = []
+    old_check, old_send = reminders.check_smtp_login, reminders.send_email
+    checks = []
+    reminders.check_smtp_login = lambda smtp: checks.append('login') or True
+    reminders.send_email = lambda *args: {'accepted': 1, 'refused': 0}
+    try:
+        assert config.software_directory() == Path(__import__('sys').executable).resolve().parent
+        assert Path(gui.__file__).resolve().parent.name == 'app'
+        assert api.encrypt_json({'buildingId': 1, 'roomId': 1}) == api.SAMPLE_PARAM
+        assert api.decrypt_json(api.SAMPLE_INFO)['electricityBalance'] == '100'
+        report['checks'].append('External app modules, bundled crypto and adjacent config path')
+        class Backend:
+            def query_balance(self, token, building, room):
+                assert token == 'offline-token'
+                return {'electricityBalance': '133' if int(room) == 9632 else '88', 'waterBalance': '13.01'}
+        def wait(app, condition):
+            end = time.monotonic() + 8
+            while time.monotonic() < end:
+                app.root.update()
+                if condition():
+                    return
+                time.sleep(.01)
+            raise AssertionError('Timed out: ' + app.reminder_status.get())
+        with tempfile.TemporaryDirectory(dir=Path(report_path).resolve().parent) as folder:
+            root = tk.Tk(); root.withdraw()
+            first = gui.BalanceApp(root, Backend(), config_dir=folder, auto_start=False)
+            apps.append(first)
+            ctl = first.reminders
+            first.token.set('offline-token')
+            ctl.password.set('offline-password')
+            for key, value in {'host': 'smtp.example.com', 'username': 'sender@example.com',
+                               'recipients': 'recipient@example.com', 'auto_start': True}.items():
+                ctl.vars[key].set(value)
+            assert ctl.save_settings(silent=True)
+            first.close()
+            root = tk.Tk(); root.withdraw()
+            second = gui.BalanceApp(root, Backend(), config_dir=folder, auto_start=True)
+            apps.append(second)
+            assert second.token.get() == 'offline-token'
+            assert second.reminders.password.get() == 'offline-password'
+            wait(second, lambda: second.reminders.active and second.electricity.get() == '133')
+            assert checks == ['login']
+            report['checks'].append('Saved credentials reload and automatic start after validation')
+            second.campuses = [{'id': 1, 'name': '东莞'}]
+            second.buildings = [{'id': 9552, 'name': '7栋'}]
+            second.rooms = [{'id': 9632, 'name': '402'}, {'id': 9633, 'name': '403'}]
+            for box, labels in zip(second.combos, [('东莞',), ('7栋',), ('402', '403')]):
+                box.configure(values=labels, state='readonly'); box.current(0)
+            second.room_box.current(1); second.choose_room()
+            wait(second, lambda: second.reminders.active and second.reminders.monitor.room == 9633 and second.electricity.get() == '88')
+            report['checks'].append('Live dorm target switching without restarting the window')
+            second.reminders.open(); second.reminders.dialog.withdraw()
+            second.root.update_idletasks()
+            second.reminders.close_dialog()
+            second.close()
+            report['checks'].append('SMTP/preferences settings window')
+        report['passed'] = True
+    except BaseException:
+        report['error'] = traceback.format_exc()
+    finally:
+        for app in apps:
+            if not app.closed:
+                app.close()
+        reminders.check_smtp_login, reminders.send_email = old_check, old_send
+        Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    return 0 if report['passed'] else 1
