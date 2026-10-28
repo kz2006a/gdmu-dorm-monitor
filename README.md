@@ -31,5 +31,3 @@ python app/gdmu_balance.py --building-id YOUR_BUILDING_ID --room-id YOUR_ROOM_ID
 ## 许可与发布
 
 项目自有代码使用 MIT。cryptography 是外部运行依赖，保留其自身许可，未在源码包中捆绑第三方库。
-
-仓库按版本号从低到高发布，每个版本推送、打标签、上传附件与公开 Release 前，都必须由仓库主人在聊天中单独确认。
